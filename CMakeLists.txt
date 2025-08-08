@@ -40,8 +40,17 @@ add_library(rotary STATIC
 )
 pico_generate_pio_header(rotary
         ${CMAKE_CURRENT_LIST_DIR}/drivers/rotary/quadrature_encoder.pio)
-target_link_libraries(rotary pico_stdlib hardware_pio)
-target_include_directories(rotary PUBLIC include)
+
+target_link_libraries(rotary
+    pico_stdlib
+    hardware_pio
+)
+
+target_include_directories(rotary PUBLIC
+    include
+    drivers/rotary                    # your exported headers
+    drivers/ws2812             # for Ws2812.hpp
+)
 
 # ---------- ws2812 driver --------------------------------------------------
 add_library(ws2812 STATIC
