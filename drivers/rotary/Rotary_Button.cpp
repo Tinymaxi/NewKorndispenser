@@ -2,9 +2,7 @@
 #include "quadrature_encoder.pio.h"
 #include "hardware/pio.h"
 
-// namespace {
-// inline int detent(int32_t raw) { return int(raw >> 2); }
-// } // unnamed namespace
+constexpr int LED_OFFSET = 9;
 
 Rotary_Button::Rotary_Button() {
     // PIO quadrature
