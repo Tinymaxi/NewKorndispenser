@@ -2,14 +2,14 @@
 #include "quadrature_encoder.pio.h"
 #include "hardware/pio.h"
 
-namespace {
-inline int detent(int32_t raw) { return int(raw >> 2); }
-} // unnamed namespace
+// namespace {
+// inline int detent(int32_t raw) { return int(raw >> 2); }
+// } // unnamed namespace
 
 Rotary_Button::Rotary_Button() {
     // PIO quadrature
-    offset_ = pio_add_program(pio0, &quadrature_encoder_program);
-    quadrature_encoder_program_init(pio0, SM_INDEX, PIN_AB, offset_);
+    pio_add_program(pio0, &quadrature_encoder_program);
+    quadrature_encoder_program_init(pio0, SM_INDEX, PIN_AB, 0);
 
     // button
     gpio_init(BUTTON_PIN);
@@ -37,7 +37,7 @@ void Rotary_Button::refreshRing() {
 }
 
 void Rotary_Button::poll() {
-    s_.pos     = detent(quadrature_encoder_get_count(pio0, SM_INDEX));
+    s_.pos     = quadrature_encoder_get_count(pio0, SM_INDEX) / 4;
     s_.pressed = (gpio_get(BUTTON_PIN) == 0);
 
     bool invert = s_.pressed;
