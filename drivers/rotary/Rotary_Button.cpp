@@ -1,10 +1,10 @@
 #include "Rotary_Button.hpp"
 #include "quadrature_encoder.pio.h"
 #include "hardware/pio.h"
+#include <stdio.h>
 
-constexpr int LED_OFFSET = 9;
-
-Rotary_Button::Rotary_Button() {
+Rotary_Button::Rotary_Button()
+{
     // PIO quadrature
     pio_add_program(pio0, &quadrature_encoder_program);
     quadrature_encoder_program_init(pio0, SM_INDEX, PIN_AB, 0);
@@ -13,34 +13,25 @@ Rotary_Button::Rotary_Button() {
     gpio_init(BUTTON_PIN);
     gpio_set_dir(BUTTON_PIN, GPIO_IN);
     gpio_pull_up(BUTTON_PIN);
-
-    setZero();
 }
 
-void Rotary_Button::setZero() {
+int Rotary_Button::getPosition()
+{
+    return quadrature_encoder_get_count(pio0, SM_INDEX) / POSITION_DIVISOR;
+}
+
+void Rotary_Button::setZero()
+{
     pio_sm_set_enabled(pio0, SM_INDEX, false);
     pio_sm_exec(pio0, SM_INDEX, pio_encode_set(pio_y, 0));
     pio_sm_exec(pio0, SM_INDEX, pio_encode_set(pio_x, 0));
     pio_sm_exec(pio0, SM_INDEX, pio_encode_push(false, false));
     pio_sm_set_enabled(pio0, SM_INDEX, true);
-
-    s_     = {0, gpio_get(BUTTON_PIN)==0};
-    prev_  = {-1,false};
-    refreshRing();
 }
 
-void Rotary_Button::refreshRing() {
-    ring_.update(s_.pos, s_.pressed ? Ws2812::Mode::Inverted
-                                    : Ws2812::Mode::Single);
-}
-
-void Rotary_Button::poll() {
-    s_.pos     = quadrature_encoder_get_count(pio0, SM_INDEX) / 4;
-    s_.pressed = (gpio_get(BUTTON_PIN) == 0);
-
-    bool invert = s_.pressed;
-    if (s_.pos != prev_.pos || invert != prev_.invert) {
-        refreshRing();
-        prev_ = {s_.pos, invert};
-    }
+bool Rotary_Button::isPressed()
+{
+    int buttonState = gpio_get(BUTTON_PIN);
+    printf("Button state: %d\n", buttonState);
+    return buttonState == 0;
 }

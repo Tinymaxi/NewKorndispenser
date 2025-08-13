@@ -8,6 +8,7 @@ uint32_t Ws2812::toGrb(Colour c) {
         case Colour::Red:   return 0x00FF00;
         case Colour::Green: return 0xFF0000;
         case Colour::Blue:  return 0x0000FF;
+        // case Colour::Orange: return 0xFF8C00;
         default:            return 0;
     }
 }

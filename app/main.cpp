@@ -2,23 +2,24 @@
 #include "Rotary_Button.hpp"
 #include <stdio.h>
 
-int main() {
+int main()
+{
     stdio_init_all();
     Rotary_Button enc;
 
-    while (true) {
-        enc.poll(); 
+    while (true)
+    {
+
+        int pos = enc.getPosition();
+        printf("Position: %d, Modulo 4: %d, Modulo 10: %d, Modulo 12: %d\n", pos, pos % 4, pos % 10, pos % 12);
+
         
-        if (enc.isPressed()){
+
+        if (enc.isPressed())
+        {
             enc.setZero();
-            printf("Encoder reset to zero/n");
         }
 
-        printf("Position: %d , %s \n",
-                enc.getPosition(),
-                 enc.isPressed() ? "pressed" : "released");  
-  
-
-        sleep_ms(5);
+        sleep_ms(500);
     }
 }

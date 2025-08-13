@@ -48,8 +48,8 @@ target_link_libraries(rotary
 
 target_include_directories(rotary PUBLIC
     include
-    drivers/rotary                    # your exported headers
-    drivers/ws2812             # for Ws2812.hpp
+    drivers/rotary                    
+    drivers/ws2812            
 )
 
 # ---------- ws2812 driver --------------------------------------------------

@@ -5,17 +5,17 @@
 class Rotary_Button {
 public:
     Rotary_Button();
-    void poll();                     // call from main loop / timer
-
-    int  getPosition() const { return s_.pos; }
-    bool isPressed()  const { return s_.pressed; }
+    int getPosition();
     void setZero();
+    bool isPressed();
+    
 
 private:
     // pins / PIO settings
     static constexpr uint PIN_AB     = 13;
     static constexpr uint BUTTON_PIN = 15;
     static constexpr uint SM_INDEX   = 0;
+    static constexpr int POSITION_DIVISOR = 4;
 
     // cached state
     struct { int pos; bool pressed; } s_{0,false};
