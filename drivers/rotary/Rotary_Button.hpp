@@ -16,13 +16,4 @@ private:
     static constexpr uint BUTTON_PIN = 15;
     static constexpr uint SM_INDEX   = 0;
     static constexpr int POSITION_DIVISOR = 4;
-
-    // cached state
-    struct { int pos; bool pressed; } s_{0,false};
-    struct { int pos; bool invert;  } prev_{-1,false};
-
-    Ws2812 ring_{3,12};
-    uint offset_ = 0;
-
-    void refreshRing();
 };

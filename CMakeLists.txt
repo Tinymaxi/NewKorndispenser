@@ -52,15 +52,45 @@ target_include_directories(rotary PUBLIC
     drivers/ws2812            
 )
 
+# ---------- ring driver ----------------------------------------------------
+add_library(neopixel_ring STATIC
+    drivers/ring/NeopixelRing.cpp
+)
+
+# The ring wrapper depends on the low-level ws2812 lib; export that to consumers.
+target_link_libraries(neopixel_ring
+    PUBLIC
+        ws2812
+)
+
+# Export ring headers
+target_include_directories(neopixel_ring
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/drivers/ring
+        ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
 # ---------- ws2812 driver --------------------------------------------------
 add_library(ws2812 STATIC
     drivers/ws2812/Ws2812.cpp
     drivers/ws2812/ws2812.pio
 )
 pico_generate_pio_header(ws2812
-        ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812/ws2812.pio)
-target_link_libraries(ws2812 pico_stdlib hardware_pio hardware_clocks)
-target_include_directories(ws2812 PUBLIC include)
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812/ws2812.pio
+)
+
+target_link_libraries(ws2812
+    pico_stdlib
+    hardware_pio
+    hardware_clocks
+)
+
+# Export the actual ws2812 header location so anything including "Ws2812.hpp" works
+target_include_directories(ws2812
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812
+        ${CMAKE_CURRENT_LIST_DIR}/include
+)
 
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
@@ -72,6 +102,7 @@ pico_set_program_version(NewKorndispenser "0.1")
 
 target_link_libraries(NewKorndispenser
     rotary
+    neopixel_ring 
     ws2812
     pico_stdlib
 )
