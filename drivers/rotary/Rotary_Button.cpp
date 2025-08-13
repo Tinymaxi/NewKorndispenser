@@ -53,7 +53,7 @@ void Rotary_Button::updateRing_(int pos, bool pressed) {
 
     if (!pressed) {
         ring_.clear();
-        ring_.setIndex(idx, ON_R, ON_G, ON_B);
+        ring_.setIndex(idx, ON_R, ON_G, 60); //60 gives a nice violet.
     } else {
         ring_.fill(ON_R, ON_G, ON_B);
         ring_.setIndex(idx, OFF_R, OFF_G, OFF_B);
@@ -63,7 +63,7 @@ void Rotary_Button::updateRing_(int pos, bool pressed) {
 
 int Rotary_Button::readPositionRaw_() const {
     int count = quadrature_encoder_get_count(pio0, SM_INDEX);
-    printf("Raw count: %d\n", count); // optional debug
+    // printf("Raw count: %d\n", count); // optional debug
     return count / POSITION_DIVISOR;
 }
 
