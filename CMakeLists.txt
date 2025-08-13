@@ -96,6 +96,23 @@ target_include_directories(ws2812
         ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
+# ---------- sevenseg driver ------------------------------------------------
+add_library(sevenseg STATIC
+    drivers/sevenseg/SevenSeg.cpp
+    drivers/sevenseg/SevenSegLayout.cpp   
+)
+
+target_link_libraries(sevenseg
+    PUBLIC
+        ws2812
+)
+
+target_include_directories(sevenseg
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/drivers/sevenseg
+        ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
     app/main.cpp
@@ -107,6 +124,7 @@ pico_set_program_version(NewKorndispenser "0.1")
 target_link_libraries(NewKorndispenser
     rotary
     neopixel_ring 
+    sevenseg
     ws2812
     pico_stdlib
 )

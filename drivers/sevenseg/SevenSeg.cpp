@@ -1,73 +1,110 @@
 #include "SevenSeg.hpp"
+#include <algorithm>
+#include <cstdlib>
 
-using Colour = Ws2812::Colour;     // reuse enum from your strip driver
+// Segment bit masks (a..g); dot is handled separately
+static constexpr uint8_t A = 1<<0;
+static constexpr uint8_t B = 1<<1;
+static constexpr uint8_t C = 1<<2;
+static constexpr uint8_t D = 1<<3;
+static constexpr uint8_t E = 1<<4;
+static constexpr uint8_t F = 1<<5;
+static constexpr uint8_t G = 1<<6;
 
-// ---------------------------------------------------------------------------
-//   Char->segment pattern (bit0 = A, bit1 = B … bit6 = G, bit7 = P)
-// ---------------------------------------------------------------------------
-static uint8_t const lut[128] = {
-/* 0x00-0x1F */ 0,
-    // …
-/* '-' 0x2D */ 0b0100'0000,
-/* '.' 0x2E */ 0b1000'0000,
-/* '0' 0x30 */ 0b0011'1111,
-/* '1' 0x31 */ 0b0000'0110,
-/* '2' 0x32 */ 0b0101'1011,
-/* '3' 0x33 */ 0b0100'1111,
-/* '4' 0x34 */ 0b0110'0110,
-/* '5' 0x35 */ 0b0110'1101,
-/* '6' 0x36 */ 0b0111'1101,
-/* '7' 0x37 */ 0b0000'0111,
-/* '8' 0x38 */ 0b0111'1111,
-/* '9' 0x39 */ 0b0110'1111,
-/* ':'-'@'   */ 0,
-/* 'A'-'Z'   */ 0, /* keep simple – add later if needed */
-};
-
-uint32_t SevenSeg::segPattern(char c) {
-    if (static_cast<unsigned>(c) < sizeof(lut)) return lut[static_cast<uint8_t>(c)];
-    return 0;
-}
-
-// ---------------------------------------------------------------------------
-
-SevenSeg::SevenSeg(uint pin, uint digits)
-    : strip_{pin, digits * 8}, n_digits_{digits}
-{
-    clear();         // buf_[] = off
-    flush();         // push once
-}
-
-void SevenSeg::fill(char c) {
-    for (uint d = 0; d < n_digits_; ++d) setChar(d, c, false);
-}
-
-void SevenSeg::setChar(uint digit, char c, bool dp) {
-    if (digit >= n_digits_) return;
-
-    uint8_t pat = segPattern(c) | (dp ? 0x80 : 0);
-    uint base   = digit * 8;
-
-    for (int seg = 0; seg < 8; ++seg) {
-        bool on = pat & (1u << seg);
-        buf_[base + seg] = on ? Ws2812::toGrb(Colour::Green) : 0;
+// Standard 7-seg glyphs (common “on = 1”) for 0..9 and minus
+uint8_t SevenSeg::glyphFor(int value) {
+    switch (value) {
+        case 0:  return A|B|C|D|E|F;            // g off
+        case 1:  return B|C;
+        case 2:  return A|B|D|E|G;
+        case 3:  return A|B|C|D|G;
+        case 4:  return F|G|B|C;
+        case 5:  return A|F|G|C|D;
+        case 6:  return A|F|E|D|C|G;
+        case 7:  return A|B|C;
+        case 8:  return A|B|C|D|E|F|G;
+        case 9:  return A|B|C|D|F|G;
+        case -1: return G;                       // minus sign
+        default: return 0;                       // blank
     }
-    flush();
 }
 
-void SevenSeg::flush() {
-    for (uint i = 0; i < n_digits_ * 8; ++i) strip_.putPixel(buf_[i]);
-}
-
-void SevenSeg::showNumber(int value) {
-    // simple right-aligned decimal
-    bool neg = value < 0;
-    unsigned u = neg ? -value : value;
-
-    for (int d = n_digits_ - 1; d >= 0; --d) {
-        char c = (u || d == n_digits_-1) ? '0' + (u % 10) : ' ';
-        setChar(d, c);
-        u /= 10;
+void SevenSeg::clear() {
+    // We do not know total strip length here; we only touch mapped pixels
+    for (uint8_t d = 0; d < layout_.digits; ++d) {
+        for (uint8_t s = 0; s < SEG_COUNT; ++s) {
+            strip_.setPixel(pix(d, s), 0, 0, 0);
+        }
     }
-    if (neg) setChar(0, '-');
+}
+
+void SevenSeg::show() {
+    strip_.show();
+}
+
+void SevenSeg::setDigitMask(uint8_t digit, uint8_t segMask, uint8_t r, uint8_t g, uint8_t b) {
+    if (digit >= layout_.digits) return;
+    // Segments a..g per bit in segMask
+    for (uint8_t bit = 0; bit < 7; ++bit) {
+        bool on = (segMask >> bit) & 1;
+        uint8_t rr = on ? r : 0, gg = on ? g : 0, bb = on ? b : 0;
+        strip_.setPixel(pix(digit, bit), rr, gg, bb);
+    }
+    // Dot is not part of segMask; leave as-is
+}
+
+void SevenSeg::setDot(uint8_t digit, bool on, uint8_t r, uint8_t g, uint8_t b) {
+    if (digit >= layout_.digits) return;
+    uint16_t p = pix(digit, SEG_P);
+    if (on) strip_.setPixel(p, r, g, b);
+    else    strip_.setPixel(p, 0, 0, 0);
+}
+
+void SevenSeg::setDigit(uint8_t digit, int value, uint8_t r, uint8_t g, uint8_t b) {
+    if (digit >= layout_.digits) return;
+    uint8_t mask = glyphFor(value);
+    setDigitMask(digit, mask, r, g, b);
+}
+
+void SevenSeg::printNumber(int value, uint8_t r, uint8_t g, uint8_t b, bool leftAlign) {
+    // Convert to string with sign
+    char buf[16];
+    int n = 0;
+
+    if (value < 0) {
+        buf[n++] = '-';
+        value = -value;
+    }
+
+    // Write digits into a temp buffer (reverse)
+    char rev[16];
+    int rn = 0;
+    if (value == 0) rev[rn++] = '0';
+    while (value > 0 && rn < 16) {
+        rev[rn++] = char('0' + (value % 10));
+        value /= 10;
+    }
+
+    // Merge sign + digits to forward order
+    int total = 0;
+    if (n == 1) buf[total++] = '-';
+    for (int i = rn-1; i >= 0; --i) buf[total++] = rev[i];
+
+    // Clear all digits first
+    for (uint8_t d = 0; d < layout_.digits; ++d) setDigit(d, 99, 0,0,0); // 99 -> blank
+
+    // Decide placement within available digits
+    int digCount = layout_.digits;
+    int start = 0;
+    if (!leftAlign) {
+        start = digCount - total;
+        if (start < 0) start = 0; // overflow: we’ll clip
+    }
+
+    // Draw into digits
+    int di = start;
+    for (int i = 0; i < total && di < digCount; ++i, ++di) {
+        if (buf[i] == '-') setDigit(di, -1, r,g,b);
+        else               setDigit(di, buf[i]-'0', r,g,b);
+    }
 }
