@@ -42,14 +42,17 @@ pico_generate_pio_header(rotary
         ${CMAKE_CURRENT_LIST_DIR}/drivers/rotary/quadrature_encoder.pio)
 
 target_link_libraries(rotary
-    pico_stdlib
-    hardware_pio
+    PUBLIC                      # <- PUBLIC so dependents also “see” headers if needed
+        neopixel_ring
+        pico_stdlib
+        hardware_pio
 )
 
 target_include_directories(rotary PUBLIC
-    include
-    drivers/rotary                    
-    drivers/ws2812            
+    ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/rotary
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812     # (still fine to keep)
+    # (we could omit drivers/ring here because PUBLIC link to neopixel_ring already exports it)
 )
 
 # ---------- ring driver ----------------------------------------------------
@@ -57,18 +60,19 @@ add_library(neopixel_ring STATIC
     drivers/ring/NeopixelRing.cpp
 )
 
-# The ring wrapper depends on the low-level ws2812 lib; export that to consumers.
 target_link_libraries(neopixel_ring
     PUBLIC
         ws2812
 )
 
-# Export ring headers
 target_include_directories(neopixel_ring
     PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/drivers/ring
         ${CMAKE_CURRENT_LIST_DIR}/include
 )
+
+# Make rotary inherit ring headers/libs
+target_link_libraries(rotary PUBLIC neopixel_ring)
 
 # ---------- ws2812 driver --------------------------------------------------
 add_library(ws2812 STATIC
@@ -108,4 +112,4 @@ target_link_libraries(NewKorndispenser
 )
 
 pico_enable_stdio_usb(NewKorndispenser 1)
-pico_add_extra_outputs(NewKorndispenser)
+pico_add_extra_outputs(NewKorndispenser 0)
