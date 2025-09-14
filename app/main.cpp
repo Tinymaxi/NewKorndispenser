@@ -27,32 +27,67 @@
 //     }
 // }
 
+// #include "pico/stdlib.h"
+// #include "Lcd1602I2C.hpp"
+
+// int main()
+// {
+//     stdio_init_all();
+
+//     // If you don’t know the address, you can scan:
+//     // uint8_t addr = Lcd1602I2C::scanFirst(i2c0);
+//     // if (addr == 0xFF) { while (true) { sleep_ms(1000); } }
+
+    
+//     Lcd1602I2C lcd(i2c0, 0x27, 20, 4); 
+//     lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
+
+//     lcd.clear();
+//     lcd.setCursor(0, 0);
+//     lcd.print("RP2040 Pico");
+//     lcd.setCursor(1, 1);
+//     lcd.print("I2C LCD readyyyy");
+
+//     lcd.cursor(false);
+//     lcd.blink(false);
+
+//     while (true)
+//     {
+//         tight_loop_contents();
+//     }
+// }
+
 #include "pico/stdlib.h"
-#include "Lcd1602I2C.hpp"
+#include "Vibrator.hpp"
 
 int main()
 {
     stdio_init_all();
 
-    // If you don’t know the address, you can scan:
-    // uint8_t addr = Lcd1602I2C::scanFirst(i2c0);
-    // if (addr == 0xFF) { while (true) { sleep_ms(1000); } }
-
-    
-    Lcd1602I2C lcd(i2c0, 0x27, 20, 4); 
-    lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("RP2040 Pico");
-    lcd.setCursor(1, 1);
-    lcd.print("I2C LCD readyyyy");
-
-    lcd.cursor(false);
-    lcd.blink(false);
+    Vibrator vib(27);
 
     while (true)
     {
-        tight_loop_contents();
+        // ramp up
+        const float MAX_I = 0.35f; // cap
+        for (int i = 0; i <= 100; ++i)
+        {
+            float x = i / 100.0f;
+            vib.setIntensity(x * MAX_I); // 0..0.35
+            sleep_ms(10);
+        }
+        // hold strong
+        sleep_ms(500);
+
+        // ramp down
+        for (int i = 100; i >= 0; --i)
+        {
+            float x = i / 100.0f;
+            vib.setIntensity(x * MAX_I); // 0..0.35
+            sleep_ms(10);
+        }
+        // pause
+        vib.off();
+        sleep_ms(400);
     }
 }
