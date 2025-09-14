@@ -137,7 +137,7 @@ target_include_directories(hx711
         ${CMAKE_CURRENT_LIST_DIR}/include   # if you expose public headers there
 )
 
-# ---------- Buzzer ---------------------------------------------------------
+# ---------- Buzzer driver --------------------------------------------------
 add_library(buzzer STATIC
     drivers/buzzer/Buzzer.cpp
 )
@@ -154,6 +154,19 @@ target_include_directories(buzzer PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/drivers/buzzer        
 )
 
+# ---------- Lcd1602I2C driver ----------------------------------------------
+add_library(lcd1602_i2c STATIC
+    drivers/lcd/Lcd1602I2C.cpp
+    # drivers/lcd/Lcd1602I2C.hpp
+)
+target_include_directories(lcd1602_i2c PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/lcd
+)
+target_link_libraries(lcd1602_i2c
+    pico_stdlib
+    hardware_i2c
+)
+
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
     app/main.cpp
@@ -168,8 +181,10 @@ target_link_libraries(NewKorndispenser
     neopixel_ring 
     sevenseg
     ws2812
+    hx711
+    lcd1602_i2c
     pico_stdlib
 )
 
 pico_enable_stdio_usb(NewKorndispenser 1)
-pico_add_extra_outputs(NewKorndispenser 0)
+pico_add_extra_outputs(NewKorndispenser)
