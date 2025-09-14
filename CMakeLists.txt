@@ -42,7 +42,7 @@ pico_generate_pio_header(rotary
         ${CMAKE_CURRENT_LIST_DIR}/drivers/rotary/quadrature_encoder.pio)
 
 target_link_libraries(rotary
-    PUBLIC                      # <- PUBLIC so dependents also “see” headers if needed
+    PUBLIC                     
         neopixel_ring
         pico_stdlib
         hardware_pio
@@ -51,8 +51,7 @@ target_link_libraries(rotary
 target_include_directories(rotary PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/drivers/rotary
-    ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812     # (still fine to keep)
-    # (we could omit drivers/ring here because PUBLIC link to neopixel_ring already exports it)
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812     
 )
 
 # ---------- ring driver ----------------------------------------------------
@@ -71,7 +70,6 @@ target_include_directories(neopixel_ring
         ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
-# Make rotary inherit ring headers/libs
 target_link_libraries(rotary PUBLIC neopixel_ring)
 
 # ---------- ws2812 driver --------------------------------------------------
@@ -89,7 +87,6 @@ target_link_libraries(ws2812
     hardware_clocks
 )
 
-# Export the actual ws2812 header location so anything including "Ws2812.hpp" works
 target_include_directories(ws2812
     PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/drivers/ws2812
@@ -134,7 +131,7 @@ target_link_libraries(hx711
 target_include_directories(hx711
     PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/drivers/hx711
-        ${CMAKE_CURRENT_LIST_DIR}/include   # if you expose public headers there
+        ${CMAKE_CURRENT_LIST_DIR}/include  
 )
 
 # ---------- Buzzer driver --------------------------------------------------
@@ -149,8 +146,7 @@ target_link_libraries(buzzer
     hardware_clocks
     )
 
-# Add the standard include files to the build
-target_include_directories(buzzer PRIVATE
+target_include_directories(buzzer PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/drivers/buzzer        
 )
 

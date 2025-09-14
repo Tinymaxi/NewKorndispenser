@@ -92,25 +92,62 @@
 //     }
 // }
 
-#include "pico/stdlib.h"
-#include "Servo.hpp"
+// #include "pico/stdlib.h"
+// #include "Servo.hpp"
 
-static void wait_ms_blocking(int ms) { sleep_ms(ms); }
+// static void wait_ms_blocking(int ms) { sleep_ms(ms); }
+
+// int main() {
+//     stdio_init_all();
+
+//     Servo s(7);     // GPIO 7
+//     s.center();
+//     sleep_ms(300);
+
+//     while (true) {
+//         // full-speed jump to 180°
+//         s.writeDegrees(180.0f);
+//         wait_ms_blocking(1800);  // give it time to arrive (tune for your linkage)
+
+//         // full-speed jump back to 0°
+//         s.writeDegrees(0.0f);
+//         wait_ms_blocking(1800);
+//     }
+// }
+
+#include "pico/stdlib.h"
+#include "Buzzer.hpp"
 
 int main() {
     stdio_init_all();
 
-    Servo s(7);     // GPIO 7
-    s.center();
-    sleep_ms(300);
+    constexpr uint BUZZER_PIN = 2;
+    constexpr uint BUTTON_PIN = 15; // adjust if needed
+    gpio_init(BUTTON_PIN);
+    gpio_set_dir(BUTTON_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON_PIN); // active-low button to GND
+
+    Buzzer bz(BUZZER_PIN);
+
+    bz.beep(); // startup chirp
+
+    absolute_time_t press_start = 0;
+    bool was_pressed = false;
 
     while (true) {
-        // full-speed jump to 180°
-        s.writeDegrees(180.0f);
-        wait_ms_blocking(1800);  // give it time to arrive (tune for your linkage)
-
-        // full-speed jump back to 0°
-        s.writeDegrees(0.0f);
-        wait_ms_blocking(1800);
+        bool pressed = (gpio_get(BUTTON_PIN) == 0); // active-low
+        if (pressed && !was_pressed) {
+            press_start = get_absolute_time();
+            bz.beep(50, 0.7f); // immediate feedback
+        }
+        if (!pressed && was_pressed) {
+            int64_t held_ms = absolute_time_diff_us(press_start, get_absolute_time()) / 1000;
+            if (held_ms > 1000) {
+                // long press: play Ode to Joy
+                bz.playMelody(Buzzer::melodyOdeToJoy(120), 10, 0.7f);
+            }
+        }
+        was_pressed = pressed;
+        sleep_ms(5);
     }
 }
