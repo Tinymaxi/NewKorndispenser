@@ -57,37 +57,60 @@
 //     }
 // }
 
-#include "pico/stdlib.h"
-#include "Vibrator.hpp"
+// #include "pico/stdlib.h"
+// #include "Vibrator.hpp"
 
-int main()
-{
+// int main()
+// {
+//     stdio_init_all();
+
+//     Vibrator vib(27);
+
+//     while (true)
+//     {
+//         // ramp up
+//         const float MAX_I = 0.35f; // cap
+//         for (int i = 0; i <= 100; ++i)
+//         {
+//             float x = i / 100.0f;
+//             vib.setIntensity(x * MAX_I); // 0..0.35
+//             sleep_ms(10);
+//         }
+//         // hold strong
+//         sleep_ms(500);
+
+//         // ramp down
+//         for (int i = 100; i >= 0; --i)
+//         {
+//             float x = i / 100.0f;
+//             vib.setIntensity(x * MAX_I); // 0..0.35
+//             sleep_ms(10);
+//         }
+//         // pause
+//         vib.off();
+//         sleep_ms(400);
+//     }
+// }
+
+#include "pico/stdlib.h"
+#include "Servo.hpp"
+
+static void wait_ms_blocking(int ms) { sleep_ms(ms); }
+
+int main() {
     stdio_init_all();
 
-    Vibrator vib(27);
+    Servo s(7);     // GPIO 7
+    s.center();
+    sleep_ms(300);
 
-    while (true)
-    {
-        // ramp up
-        const float MAX_I = 0.35f; // cap
-        for (int i = 0; i <= 100; ++i)
-        {
-            float x = i / 100.0f;
-            vib.setIntensity(x * MAX_I); // 0..0.35
-            sleep_ms(10);
-        }
-        // hold strong
-        sleep_ms(500);
+    while (true) {
+        // full-speed jump to 180°
+        s.writeDegrees(180.0f);
+        wait_ms_blocking(1800);  // give it time to arrive (tune for your linkage)
 
-        // ramp down
-        for (int i = 100; i >= 0; --i)
-        {
-            float x = i / 100.0f;
-            vib.setIntensity(x * MAX_I); // 0..0.35
-            sleep_ms(10);
-        }
-        // pause
-        vib.off();
-        sleep_ms(400);
+        // full-speed jump back to 0°
+        s.writeDegrees(0.0f);
+        wait_ms_blocking(1800);
     }
 }

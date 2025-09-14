@@ -167,7 +167,7 @@ target_link_libraries(lcd1602_i2c
     hardware_i2c
 )
 
-# ---------- Vibrator driver ----------------------------------------------
+# ---------- Vibrator driver ------------------------------------------------
 add_library(vibrator STATIC
     drivers/vibrator/Vibrator.cpp
 )
@@ -180,6 +180,35 @@ target_link_libraries(vibrator
     pico_stdlib
     hardware_pwm
     hardware_clocks
+)
+
+# ---------- PID driver -----------------------------------------------------
+add_library(pid STATIC
+    drivers/pid/PID.cpp
+)
+
+target_include_directories(pid PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/pid
+)
+
+target_link_libraries(pid
+    pico_time
+    pico_stdlib
+)
+
+# ---------- Servo driver ---------------------------------------------------
+add_library(servo STATIC
+    drivers/servo/Servo.cpp
+)
+
+target_include_directories(servo PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/servo
+)
+
+target_link_libraries(servo
+    hardware_pwm
+    hardware_clocks
+    pico_stdlib
 )
 
 # ---------- executable -----------------------------------------------------
@@ -198,6 +227,8 @@ target_link_libraries(NewKorndispenser
     ws2812
     hx711
     vibrator
+    pid
+    servo
     lcd1602_i2c
     pico_stdlib
 )
