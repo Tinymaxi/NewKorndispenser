@@ -113,6 +113,47 @@ target_include_directories(sevenseg
         ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
+# ---------- HX711 driver ---------------------------------------------------
+add_library(hx711 STATIC
+    drivers/hx711/hx711.cpp         
+    drivers/hx711/config_store.cpp 
+)
+
+pico_generate_pio_header(hx711
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/hx711/hx711_reader.pio
+)
+
+target_link_libraries(hx711
+    PUBLIC
+        pico_stdlib
+        hardware_pio
+        hardware_gpio
+        hardware_flash
+)
+
+target_include_directories(hx711
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/drivers/hx711
+        ${CMAKE_CURRENT_LIST_DIR}/include   # if you expose public headers there
+)
+
+# ---------- Buzzer ---------------------------------------------------------
+add_library(buzzer STATIC
+    drivers/buzzer/Buzzer.cpp
+)
+
+target_link_libraries(buzzer
+    PUBLIC
+    pico_stdlib
+    hardware_pwm
+    hardware_clocks
+    )
+
+# Add the standard include files to the build
+target_include_directories(buzzer PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/drivers/buzzer        
+)
+
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
     app/main.cpp
@@ -122,6 +163,7 @@ pico_set_program_name   (NewKorndispenser "NewKorndispenser")
 pico_set_program_version(NewKorndispenser "0.1")
 
 target_link_libraries(NewKorndispenser
+    buzzer
     rotary
     neopixel_ring 
     sevenseg
