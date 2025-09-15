@@ -3,7 +3,8 @@
 #include "hardware/pio.h"
 #include <stdio.h>
 
-Rotary_Button::Rotary_Button() {
+Rotary_Button::Rotary_Button()
+{
     // --- Quadrature encoder PIO init (from your old working code) ---
     pio_add_program(pio0, &quadrature_encoder_program);
     // The last parameter to init is the wrap pin for B = A+1
@@ -20,7 +21,8 @@ Rotary_Button::Rotary_Button() {
     ring_.show();
 }
 
-int Rotary_Button::getPosition() {
+int Rotary_Button::getPosition()
+{
     int pos = readPositionRaw_();
     bool pressed = readPressedRaw_();
     updateRing_(pos, pressed);
@@ -36,38 +38,47 @@ void Rotary_Button::setZero()
     pio_sm_set_enabled(pio0, SM_INDEX, true);
 }
 
-bool Rotary_Button::isPressed() {
+bool Rotary_Button::isPressed()
+{
+    printf("In Pressed");
     bool pressed = readPressedRaw_();
+    pressed &= gpio_get(BUTTON_PIN);
+    printf("isPressed() -> %d\r\n", pressed);
     int pos = readPositionRaw_();
     updateRing_(pos, pressed);
     return pressed;
 }
 
-void Rotary_Button::updateRing_(int pos, bool pressed) {
+void Rotary_Button::updateRing_(int pos, bool pressed)
+{
     uint8_t idx = wrap_index(pos, (uint8_t)RING_COUNT);
 
-    if ((int)idx == last_idx_ && pressed == last_pressed_) return;
+    if ((int)idx == last_idx_ && pressed == last_pressed_)
+        return;
 
     last_idx_ = idx;
     last_pressed_ = pressed;
 
-    if (!pressed) {
+    if (!pressed)
+    {
         ring_.clear();
-        ring_.setIndex(idx, ON_R, ON_G, 60); //60 gives a nice violet.
-    } else {
+        ring_.setIndex(idx, ON_R, ON_G, 60); // 60 gives a nice violet.
+    }
+    else
+    {
         ring_.fill(ON_R, ON_G, ON_B);
         ring_.setIndex(idx, OFF_R, OFF_G, OFF_B);
     }
     ring_.show();
 }
 
-int Rotary_Button::readPositionRaw_() const {
+int Rotary_Button::readPositionRaw_() const
+{
     int count = quadrature_encoder_get_count(pio0, SM_INDEX);
-    // printf("Raw count: %d\n", count); // optional debug
+    printf("Raw count: %d\n", count); // optional debug
     return count / POSITION_DIVISOR;
 }
 
 bool Rotary_Button::readPressedRaw_() const {
-    // Active-low button
-    return gpio_get(BUTTON_PIN) == 0;
+    return gpio_get(BUTTON_PIN) == 0;   
 }

@@ -230,4 +230,6 @@ target_link_libraries(NewKorndispenser
 )
 
 pico_enable_stdio_usb(NewKorndispenser 1)
+pico_enable_stdio_uart(NewKorndispenser 0)
+
 pico_add_extra_outputs(NewKorndispenser)

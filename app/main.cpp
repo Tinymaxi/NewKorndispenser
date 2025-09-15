@@ -1,155 +1,285 @@
-// #include "pico/stdlib.h"
-// #include "Rotary_Button.hpp"
-// #include "SevenSeg.hpp"
-// #include "SevenSegLayout.cpp" // or use the header with extern + compiled SevenSegLayout.cpp
-
-// int main() {
-//     stdio_init_all();
-
-//     // Rotary encoder + Neopixel ring
-//     Rotary_Button enc;
-
-//     // Seven segment display (6 digits)
-//     Ws2812 ws_segments(28, 48); // adjust pin & LED count for your 6-digit setup
-//     SevenSeg seven(ws_segments, LAYOUT_6DIGITS);
-
-//     while (true) {
-//         // Read encoder position
-//         int pos = enc.getPosition();
-
-//         // Show value on the 7-seg
-//         seven.clear();
-//         seven.printNumber(pos, 255, 128, 0); // orange
-//         seven.show();
-
-//         // Small debounce delay
-//         sleep_ms(20);
-//     }
-// }
-
-// #include "pico/stdlib.h"
-// #include "Lcd1602I2C.hpp"
-
-// int main()
-// {
-//     stdio_init_all();
-
-//     // If you don’t know the address, you can scan:
-//     // uint8_t addr = Lcd1602I2C::scanFirst(i2c0);
-//     // if (addr == 0xFF) { while (true) { sleep_ms(1000); } }
-
-    
-//     Lcd1602I2C lcd(i2c0, 0x27, 20, 4); 
-//     lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
-
-//     lcd.clear();
-//     lcd.setCursor(0, 0);
-//     lcd.print("RP2040 Pico");
-//     lcd.setCursor(1, 1);
-//     lcd.print("I2C LCD readyyyy");
-
-//     lcd.cursor(false);
-//     lcd.blink(false);
-
-//     while (true)
-//     {
-//         tight_loop_contents();
-//     }
-// }
-
-// #include "pico/stdlib.h"
-// #include "Vibrator.hpp"
-
-// int main()
-// {
-//     stdio_init_all();
-
-//     Vibrator vib(27);
-
-//     while (true)
-//     {
-//         // ramp up
-//         const float MAX_I = 0.35f; // cap
-//         for (int i = 0; i <= 100; ++i)
-//         {
-//             float x = i / 100.0f;
-//             vib.setIntensity(x * MAX_I); // 0..0.35
-//             sleep_ms(10);
-//         }
-//         // hold strong
-//         sleep_ms(500);
-
-//         // ramp down
-//         for (int i = 100; i >= 0; --i)
-//         {
-//             float x = i / 100.0f;
-//             vib.setIntensity(x * MAX_I); // 0..0.35
-//             sleep_ms(10);
-//         }
-//         // pause
-//         vib.off();
-//         sleep_ms(400);
-//     }
-// }
-
-// #include "pico/stdlib.h"
-// #include "Servo.hpp"
-
-// static void wait_ms_blocking(int ms) { sleep_ms(ms); }
-
-// int main() {
-//     stdio_init_all();
-
-//     Servo s(7);     // GPIO 7
-//     s.center();
-//     sleep_ms(300);
-
-//     while (true) {
-//         // full-speed jump to 180°
-//         s.writeDegrees(180.0f);
-//         wait_ms_blocking(1800);  // give it time to arrive (tune for your linkage)
-
-//         // full-speed jump back to 0°
-//         s.writeDegrees(0.0f);
-//         wait_ms_blocking(1800);
-//     }
-// }
-
 #include "pico/stdlib.h"
+#include <cstdio>
+
 #include "Buzzer.hpp"
+#include "Rotary_Button.hpp"
+#include "Lcd1602I2C.hpp"
+#include "hx711.hpp"
+#include "config_store.hpp"
 
-// test
+constexpr uint BUZZER_PIN = 2;
+Rotary_Button enc;
+Buzzer bz(BUZZER_PIN);
+Lcd1602I2C lcd(i2c0, 0x27, 20, 4);
+hx711 scaleA(16, 17);
 
-int main() {
+ScaleConfig sc;
+
+// void indicatorArrow(int lineNumber);
+
+int main()
+{
     stdio_init_all();
 
-    constexpr uint BUZZER_PIN = 2;
-    constexpr uint BUTTON_PIN = 15; // adjust if needed
-    gpio_init(BUTTON_PIN);
-    gpio_set_dir(BUTTON_PIN, GPIO_IN);
-    gpio_pull_up(BUTTON_PIN); // active-low button to GND
+    while (!stdio_usb_connected())
+    {
+        sleep_ms(500);
+    }
 
-    Buzzer bz(BUZZER_PIN);
+    printf("Serial connected. Ready.\r\r\n");
 
     bz.beep(); // startup chirp
+    lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
 
-    absolute_time_t press_start = 0;
-    bool was_pressed = false;
+    bool isConfigured = false;
 
-    while (true) {
-        bool pressed = (gpio_get(BUTTON_PIN) == 0); // active-low
-        if (pressed && !was_pressed) {
-            press_start = get_absolute_time();
-            bz.beep(50, 0.7f); // immediate feedback
+    if (load_scale_config(sc))
+    {
+        // Apply, then verify if the values look like defaults
+        apply_scale_config(scaleA, sc.entries[2]);
+        const bool looks_default = (scaleA.get_offset() == 0) && (scaleA.get_scale() == 1.0f);
+
+        lcd.clear();
+        if (looks_default)
+        {
+            // Two-line centered message
+            lcd.setCursor(0, 0);
+            lcd.print("     No valid");
+            lcd.setCursor(1, 0);
+            lcd.print("  config in flash!   ");
+
+            char line[21]; // 20 cols + null
+            lcd.setCursor(2, 0);
+            std::snprintf(line, sizeof(line), "Scale: %.6f", scaleA.get_scale());
+            lcd.print(line);
+
+            lcd.setCursor(3, 0);
+            std::snprintf(line, sizeof(line), "Offset: %ld", (long)scaleA.get_offset());
+            lcd.print(line);
+            sleep_ms(2500);
         }
-        if (!pressed && was_pressed) {
-            int64_t held_ms = absolute_time_diff_us(press_start, get_absolute_time()) / 1000;
-            if (held_ms > 1000) {
-                // long press: play Ode to Joy
-                bz.playMelody(Buzzer::melodyOdeToJoy(120), 10, 0.7f);
-            }
+        else
+        {
+            isConfigured = true;
+            // Brief confirmation; optionally show values
+            lcd.setCursor(0, 0);
+            lcd.print("   Loaded config   ");
+
+            char line[21]; // 20 cols + null
+            lcd.setCursor(1, 0);
+            std::snprintf(line, sizeof(line), "Scale: %.6f", scaleA.get_scale());
+            lcd.print(line);
+
+            lcd.setCursor(2, 0);
+            std::snprintf(line, sizeof(line), "Offset: %ld", (long)scaleA.get_offset());
+            lcd.print(line);
+            sleep_ms(1500);
         }
-        was_pressed = pressed;
-        sleep_ms(5);
     }
+    else
+    {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("     No valid");
+        lcd.setCursor(1, 0);
+        lcd.print("  config in flash   ");
+        sleep_ms(1500);
+    }
+
+    // lcd.clear();
+    // lcd.setCursor(0, 2);
+    // lcd.print("Menu");
+    // lcd.setCursor(1, 2);
+    // lcd.print("Calibrate");
+    // lcd.setCursor(2, 2);
+    // lcd.print("Weigh");
+
+    enum class ScreenId
+    {
+        Menu,
+        Calibrate1,
+        Calibrate2,
+        Weigh
+    };
+
+    // add after enum class ScreenId { ... };
+    ScreenId current = isConfigured ? ScreenId::Menu : ScreenId::Calibrate1;
+    ScreenId last_screen = static_cast<ScreenId>(-1);
+    int last_selected = -1;
+
+    //     while (true)
+    //     {
+
+    //         switch (current)
+    //         {
+    //         case ScreenId::Menu:
+    //         {
+    //             int pos = enc.getPosition() + 999;
+    //             int selected = pos % 3;
+
+    //             if (selected != last_selected)
+    //             {
+    //                 indicatorArrow(selected);
+    //                 printf("Selected %d", pos);
+    //                 last_selected = selected;
+    //             }
+    //             // printf("Screen: Menu\n");
+
+    //             break;
+    //         }
+    //         case ScreenId::Calibrate1:
+    //         {
+    //             lcd.setCursor(0, 2);
+    //             lcd.print("Menu");
+    //             lcd.setCursor(1, 2);
+    //             lcd.print("Calibrate");
+    //             lcd.setCursor(2, 2);
+    //             lcd.print("Weigh");
+    //         }
+    //         }
+    //     }
+    // }
+    sleep_ms(1500);
+    printf("Hello there!");
+    while (true)
+    {
+        int raw = gpio_get(15);
+        printf("BTN raw=%d\r\n", raw);
+        sleep_ms(100);
+        // render screen header only when screen changes
+        if (current != last_screen)
+        {
+            lcd.clear();
+            switch (current)
+            {
+            case ScreenId::Menu:
+                lcd.setCursor(0, 2);
+                lcd.print("Menu");
+                lcd.setCursor(1, 2);
+                lcd.print("Calibrate");
+                lcd.setCursor(2, 2);
+                lcd.print("Weigh");
+                // indicatorArrow(0); // default highlight
+                last_selected = 0;
+                break;
+
+            case ScreenId::Calibrate1:
+                lcd.setCursor(0, 0);
+                lcd.print("Calibrate step 1");
+                lcd.setCursor(1, 0);
+                lcd.print("Remove all weight");
+                lcd.setCursor(2, 0);
+                lcd.print("Press button...");
+                break;
+
+            case ScreenId::Calibrate2:
+                lcd.setCursor(0, 0);
+                lcd.print("Calibrate step 2");
+                lcd.setCursor(1, 0);
+                lcd.print("Place known weight");
+                lcd.setCursor(2, 0);
+                lcd.print("Enter grams...");
+                break;
+
+            case ScreenId::Weigh:
+                lcd.setCursor(0, 0);
+                lcd.print("Weighing...");
+                break;
+            }
+            last_screen = current;
+        }
+
+        switch (current)
+        {
+        case ScreenId::Menu:
+        {
+            printf("In Menu!\n");
+            // robust mod for negatives
+            int pos = enc.getPosition();
+            int selected = ((pos % 3) + 3) % 3;
+
+            if (selected != last_selected)
+            {
+                // indicatorArrow(selected);
+                last_selected = selected;
+            }
+
+            // example navigation on button press
+            if (enc.isPressed())
+            {
+                if (selected == 0)
+                    current = ScreenId::Menu; // no-op / could open submenu
+                else if (selected == 1)
+                    current = ScreenId::Calibrate1; // go to calibration
+                else
+                    current = ScreenId::Weigh; // go to weighing
+            }
+            break;
+        }
+
+        case ScreenId::Calibrate1:
+        {
+            printf("In Calibrate1!\r\n");
+            static bool last = false;
+            bool pressed = enc.isPressed(); // one call per loop
+
+            if (pressed && !last)
+            { // rising edge
+                int32_t offset = scaleA.calibr_read_average(20);
+                scaleA.set_offset(offset);
+                printf("Pressed branch taken. Offset=%ld\r\n", (long)offset);
+                // current = ScreenId::Calibrate2;
+            }
+            last = pressed;
+            break;
+        }
+
+        case ScreenId::Calibrate2:
+        {
+            printf("In Calibrate2!\n");
+            // Here you'd read an entered gram value and compute scale
+            // After computing:
+            // scaleA.set_scale(counts_per_gram); // or your API
+            // Optionally persist:
+            // sc.entries[2].offset_counts = scaleA.get_offset();
+            // sc.entries[2].g_per_count   = 1.0f / scaleA.get_scale(); // or whatever your convention is
+            // save_scale_config(sc);
+
+            // When done, go to weigh or menu
+            // current = ScreenId::Weigh;
+            break;
+        }
+
+        case ScreenId::Weigh:
+        {
+            printf("In Weigh!\n");
+            int32_t raw = scaleA.read_weight();
+            float grams = scaleA.read_raw_hx711(); // or compute using your scale/offset
+            char line[21];
+            std::snprintf(line, sizeof(line), "g: %.2f   raw:%ld", grams, (long)raw);
+            lcd.setCursor(1, 0);
+            lcd.print("                ");
+            lcd.setCursor(1, 0);
+            lcd.print(line);
+            break;
+        }
+        }
+    }
+
+    // void indicatorArrow(int lineNumber)
+    // {
+    //     for (int i = 0; i <= 3; i++)
+    //     {
+    //         if (lineNumber == i)
+    //         {
+    //             lcd.setCursor(i, 0);
+    //             lcd.writeChar('>');
+    //         }
+    //         else
+    //         {
+    //             lcd.setCursor(i, 0);
+    //             lcd.writeChar(' ');
+    //         }
+    //     }
+    // }
 }
