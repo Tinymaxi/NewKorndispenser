@@ -40,13 +40,7 @@ void Rotary_Button::setZero()
 
 bool Rotary_Button::isPressed()
 {
-    printf("In Pressed");
-    bool pressed = readPressedRaw_();
-    pressed &= gpio_get(BUTTON_PIN);
-    printf("isPressed() -> %d\r\n", pressed);
-    int pos = readPositionRaw_();
-    updateRing_(pos, pressed);
-    return pressed;
+    return gpio_get(BUTTON_PIN) == 0;
 }
 
 void Rotary_Button::updateRing_(int pos, bool pressed)

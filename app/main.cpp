@@ -139,7 +139,6 @@ int main()
     //         }
     //     }
     // }
-    sleep_ms(1500);
     printf("Hello there!");
     while (true)
     {
@@ -220,17 +219,15 @@ int main()
         case ScreenId::Calibrate1:
         {
             printf("In Calibrate1!\r\n");
-            static bool last = false;
-            bool pressed = enc.isPressed(); // one call per loop
 
-            if (pressed && !last)
-            { // rising edge
-                int32_t offset = scaleA.calibr_read_average(20);
-                scaleA.set_offset(offset);
-                printf("Pressed branch taken. Offset=%ld\r\n", (long)offset);
-                // current = ScreenId::Calibrate2;
+            bool pressed = enc.isPressed(); // active-low, debounced
+            if (pressed)
+            {
+                printf("Pressed!\r\n");
+                // do your action here (or on rising edge if you prefer)
             }
-            last = pressed;
+
+            sleep_ms(50); // pace the loop so USB output is readable
             break;
         }
 
