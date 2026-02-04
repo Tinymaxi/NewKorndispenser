@@ -23,6 +23,7 @@ private:
     static constexpr uint PIN_AB = 13;
     static constexpr uint SM_INDEX = 0;
     static constexpr int POSITION_DIVISOR = 4;
+    static constexpr uint32_t DEBOUNCE_MS = 80;  // Minimum ms between position changes
     static constexpr uint8_t ON_R = 40;
     static constexpr uint8_t ON_G = 15;
     static constexpr uint8_t ON_B = 0;
@@ -38,6 +39,10 @@ private:
     // Track last rendered state
     int last_idx_ = -1;
     bool last_pressed_ = false;
+
+    // Debounce state
+    int debounced_pos_ = 0;
+    uint32_t last_change_time_ = 0;
 
     static inline uint8_t wrap_index(int v, uint8_t n)
     {

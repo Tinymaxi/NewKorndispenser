@@ -1,6 +1,7 @@
 #include "Rotary_Button.hpp"
 #include "quadrature_encoder.pio.h"
 #include "hardware/pio.h"
+#include "pico/time.h"
 #include <stdio.h>
 
 Rotary_Button::Rotary_Button()
@@ -62,10 +63,20 @@ Rotary_Button::Rotary_Button()
 
 int Rotary_Button::getPosition()
 {
-    int pos = readPositionRaw_();
+    int raw_pos = readPositionRaw_();
     bool pressed = readPressedRaw_();
-    updateRing_(pos, pressed);
-    return pos;
+
+    // Time-based debounce: only update position if enough time has passed
+    if (raw_pos != debounced_pos_) {
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        if (now - last_change_time_ >= DEBOUNCE_MS) {
+            debounced_pos_ = raw_pos;
+            last_change_time_ = now;
+        }
+    }
+
+    updateRing_(debounced_pos_, pressed);
+    return debounced_pos_;
 }
 
 void Rotary_Button::setZero()
@@ -75,6 +86,7 @@ void Rotary_Button::setZero()
     pio_sm_exec(encoder_pio_, SM_INDEX, pio_encode_set(pio_x, 0));
     pio_sm_exec(encoder_pio_, SM_INDEX, pio_encode_push(false, false));
     pio_sm_set_enabled(encoder_pio_, SM_INDEX, true);
+    debounced_pos_ = 0;
 }
 
 bool Rotary_Button::isPressed()
