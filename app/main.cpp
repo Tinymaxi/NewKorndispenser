@@ -239,9 +239,10 @@ int main()
                 lcd.setCursor(0, 0);
                 lcd.print(title);
                 lcd.setCursor(1, 0);
-                lcd.print("Remove all weight");
+                lcd.print("Remove all weight   ");
                 lcd.setCursor(2, 0);
-                lcd.print("Press button...");
+                lcd.print("then select:        ");
+                // Row 3 options are drawn in the logic section
                 break;
             }
 
@@ -375,23 +376,68 @@ int main()
 
         case ScreenId::Calibrate1:
         {
-            if (enc.isPressed())
-            {
-                scales[selected_scale]->tare();  // zero the selected scale
-                bz.playMarioCoin();  // Bling!
-                current = ScreenId::Calibrate2;
+            // Option selection: Tare or Back
+            static int cal1_option = 0;  // 0=Tare, 1=Back
+            static int last_cal1_option = -1;
+            static int last_encoder_pos_cal1 = 0;
+            static bool first_entry_cal1 = true;
+            static bool was_pressed_cal1 = false;
+
+            if (first_entry_cal1) {
+                last_encoder_pos_cal1 = enc.getPosition();
+                first_entry_cal1 = false;
+                was_pressed_cal1 = enc.isPressed();
+                cal1_option = 0;
+                last_cal1_option = -1;
             }
+
+            int pos = enc.getPosition();
+            int delta = pos - last_encoder_pos_cal1;
+            if (delta != 0) {
+                cal1_option += delta;
+                if (cal1_option < 0) cal1_option = 0;
+                if (cal1_option > 1) cal1_option = 1;
+                last_encoder_pos_cal1 = pos;
+            }
+
+            // Update option display
+            if (cal1_option != last_cal1_option) {
+                char opt_line[21];
+                std::snprintf(opt_line, sizeof(opt_line), "   %s%s%s%s%s%s",
+                    cal1_option == 0 ? "[" : " ", "Tare", cal1_option == 0 ? "]" : " ",
+                    cal1_option == 1 ? "[" : " ", "Back", cal1_option == 1 ? "]" : " ");
+                lcd.setCursor(3, 0);
+                lcd.print(opt_line);
+                last_cal1_option = cal1_option;
+            }
+
+            bool pressed = enc.isPressed();
+            if (pressed && !was_pressed_cal1) {
+                if (cal1_option == 0) {
+                    // Tare and continue
+                    scales[selected_scale]->tare();
+                    bz.playMarioCoin();  // Bling!
+                    first_entry_cal1 = true;
+                    current = ScreenId::Calibrate2;
+                } else {
+                    // Back to menu
+                    first_entry_cal1 = true;
+                    current = ScreenId::Menu;
+                }
+            }
+            was_pressed_cal1 = pressed;
+
             sleep_ms(50);
             break;
         }
 
         case ScreenId::Calibrate2:
         {
-            // Digit entry: 4 digits + OK button
+            // Digit entry: 4 digits + OK + Back buttons
             // Navigation mode: encoder moves cursor, button enters edit/confirms
             // Edit mode: encoder changes digit value, button exits edit
             static int digits[4] = {1, 0, 5, 6};  // Default 1056g
-            static int cursor_pos = 0;  // 0-3 = digits, 4 = OK
+            static int cursor_pos = 0;  // 0-3 = digits, 4 = OK, 5 = Back
             static int last_encoder_pos = 0;
             static bool first_entry = true;
             static bool was_pressed = false;
@@ -400,7 +446,7 @@ int main()
             if (first_entry) {
                 last_encoder_pos = enc.getPosition();
                 first_entry = false;
-                was_pressed = false;
+                was_pressed = enc.isPressed();
                 cursor_pos = 0;
                 edit_mode = false;
             }
@@ -424,15 +470,15 @@ int main()
                 if (delta != 0) {
                     cursor_pos += delta;
                     if (cursor_pos < 0) cursor_pos = 0;
-                    if (cursor_pos > 4) cursor_pos = 4;
+                    if (cursor_pos > 5) cursor_pos = 5;  // 0-3=digits, 4=OK, 5=Back
                     last_encoder_pos = pos;
                 }
-                // Button enters edit mode or confirms OK
+                // Button enters edit mode or confirms OK/Back
                 if (pressed && !was_pressed) {
                     if (cursor_pos < 4) {
                         // Enter edit mode for this digit
                         edit_mode = true;
-                    } else {
+                    } else if (cursor_pos == 4) {
                         // OK pressed - calibrate selected scale
                         int known_grams = digits[0] * 1000 + digits[1] * 100 +
                                           digits[2] * 10 + digits[3];
@@ -445,6 +491,10 @@ int main()
                         sc.entries[selected_scale].count_per_g = scales[selected_scale]->get_scale();
                         save_scale_config(sc);
 
+                        first_entry = true;
+                        current = ScreenId::Menu;
+                    } else {
+                        // Back pressed - return to menu without saving
                         first_entry = true;
                         current = ScreenId::Menu;
                     }
@@ -464,22 +514,22 @@ int main()
                         std::snprintf(d[i], 4, " %d ", digits[i]);
                     }
                 }
-                std::snprintf(line1, sizeof(line1), "%s%s%s%s OK",
-                             d[0], d[1], d[2], d[3]);
+                std::snprintf(line1, sizeof(line1), "%s%s%s%sg", d[0], d[1], d[2], d[3]);
             } else {
-                std::snprintf(line1, sizeof(line1), " %d  %d  %d  %d %s",
+                // Format: "1 0 5 6 g [OK][Back]" - compact to fit
+                std::snprintf(line1, sizeof(line1), "%d %d %d %d g %s%s",
                              digits[0], digits[1], digits[2], digits[3],
-                             cursor_pos == 4 ? "[OK]" : " OK ");
+                             cursor_pos == 4 ? "[OK]" : " OK ",
+                             cursor_pos == 5 ? "[Back]" : " Back ");
             }
             lcd.setCursor(2, 0);
             lcd.print(line1);
 
             // Cursor line (only in navigation mode)
-            // Display format: " 1  0  5  6  OK " positions 1,4,7,10,13
             char line2[21] = "                    ";
-            if (!edit_mode) {
-                int cursor_x = 1 + cursor_pos * 3;  // Digits at 1,4,7,10
-                if (cursor_pos == 4) cursor_x = 13;  // Under OK
+            if (!edit_mode && cursor_pos < 4) {
+                // Cursor under digits: positions 0, 2, 4, 6
+                int cursor_x = cursor_pos * 2;
                 line2[cursor_x] = '^';
             }
             lcd.setCursor(3, 0);
@@ -691,14 +741,12 @@ int main()
 
             // Update option display if changed
             if (weigh_option != last_weigh_option) {
-                // Format: " Tare   Target   Back"
-                // With brackets around selected option
-                const char* opts[3] = {"Tare", "Target", "Back"};
+                // Format: "[Tare][Target][Back]" - no spacing between options
                 char opt_line[21];
-                std::snprintf(opt_line, sizeof(opt_line), "%s%s%s %s%s%s %s%s%s",
-                    weigh_option == 0 ? "[" : " ", opts[0], weigh_option == 0 ? "]" : " ",
-                    weigh_option == 1 ? "[" : " ", opts[1], weigh_option == 1 ? "]" : " ",
-                    weigh_option == 2 ? "[" : " ", opts[2], weigh_option == 2 ? "]" : " ");
+                std::snprintf(opt_line, sizeof(opt_line), "%s%s%s%s%s%s%s%s%s",
+                    weigh_option == 0 ? "[" : " ", "Tare", weigh_option == 0 ? "]" : " ",
+                    weigh_option == 1 ? "[" : " ", "Target", weigh_option == 1 ? "]" : " ",
+                    weigh_option == 2 ? "[" : " ", "Back", weigh_option == 2 ? "]" : " ");
                 lcd.setCursor(3, 0);
                 lcd.print(opt_line);
                 last_weigh_option = weigh_option;
@@ -904,7 +952,8 @@ int main()
                     disp_state = DispenseState::Done;
                     disp_option = 0;
                     last_disp_option = -1;
-                    bz.playCloseEncounters();  // Dispense complete!
+                    bz.playCloseEncounters();  // Dispense complete! (also gives servo time to close)
+                    servos[selected_scale]->off();  // Release servo (no holding torque)
                 }
 
                 // Manual stop
@@ -912,6 +961,8 @@ int main()
                     servos[selected_scale]->writeDegrees(55.0f);  // Close to 55°
                     vibrators[selected_scale]->off();
                     dispense_pid->SetMode(MANUAL);
+                    sleep_ms(300);  // Give servo time to close
+                    servos[selected_scale]->off();  // Release servo
                     disp_state = DispenseState::Idle;
                     disp_option = 1;
                     last_disp_option = -1;

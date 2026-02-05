@@ -61,6 +61,11 @@ void Servo::center() {
     writeMicros(US_CENT);
 }
 
+void Servo::off() {
+    // Stop PWM signal - servo will relax and not hold torque
+    pwm_set_chan_level(_slice, _channel, 0);
+}
+
 void Servo::writeDegrees(float deg) {
     if (deg < 0.0f)   deg = 0.0f;
     if (deg > 180.0f) deg = 180.0f;

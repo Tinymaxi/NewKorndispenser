@@ -8,6 +8,7 @@ public:
     void writeMicros(uint16_t us);  // 800..2200 µs (clamped)
     void writeDegrees(float deg);   // 0..180°   (maps to 800..2200 µs)
     void center();                  // 1520 µs
+    void off();                     // Stop PWM signal (servo relaxes, no holding torque)
 
 private:
     void setupPwmFixed();           // 333 Hz
