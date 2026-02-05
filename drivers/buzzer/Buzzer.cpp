@@ -200,3 +200,32 @@ void Buzzer::playMarioCoin(float volume)
     playTone(NOTE_B5, 60, volume);
     playTone(NOTE_E6, 180, volume);
 }
+
+void Buzzer::playDasBoot(float volume)
+{
+    // Das Boot theme by Klaus Doldinger - the iconic synth melody
+    // Key of E minor, slow dramatic tempo (~108 BPM)
+    const uint32_t NOTE_E4 = 329;
+    const uint32_t NOTE_FS4 = 370;  // F#4
+    const uint32_t NOTE_D4 = 293;
+    const uint32_t NOTE_B3 = 246;
+    const uint32_t NOTE_E3 = 164;
+
+    const uint32_t s = 220;   // Short note (eighth)
+    const uint32_t m = 350;   // Medium note (quarter)
+    const uint32_t l = 500;   // Long note (held)
+    const uint32_t g = 80;    // Gap between notes
+
+    // The iconic opening motif: E-E-E-D-E-F#-E (slow and dramatic)
+    playTone(NOTE_E4, s, volume); rest(g);
+    playTone(NOTE_E4, s, volume); rest(g);
+    playTone(NOTE_E4, s, volume); rest(g);
+    playTone(NOTE_D4, s, volume); rest(g);
+    playTone(NOTE_E4, m, volume); rest(g);
+    playTone(NOTE_FS4, m, volume); rest(g);
+    playTone(NOTE_E4, l, volume); rest(g);
+
+    // Descending bass response
+    playTone(NOTE_B3, m, volume); rest(g);
+    playTone(NOTE_E3, l + 200, volume);  // Hold the final low E
+}

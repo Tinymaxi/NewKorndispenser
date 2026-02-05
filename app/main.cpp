@@ -52,9 +52,13 @@ int main()
 {
     stdio_init_all();
 
-    // IMPORTANT: Close all servos immediately on startup to prevent corn spillage
+    // Close all servos at startup, then release (no holding torque)
     for (int i = 0; i < 3; i++) {
         servos[i]->writeDegrees(60.0f);  // Closed position
+    }
+    sleep_ms(500);  // Give servos time to reach position
+    for (int i = 0; i < 3; i++) {
+        servos[i]->off();  // Release - no holding torque
     }
 
     while (!stdio_usb_connected())

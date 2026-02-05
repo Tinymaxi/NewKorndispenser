@@ -29,6 +29,7 @@ public:
     void playMacStartup(float volume = 0.5f);       // Mac-like startup chime
     void playCloseEncounters(float volume = 0.5f); // The famous 5-note alien sequence
     void playMarioCoin(float volume = 0.6f);       // Classic coin "bling!"
+    void playDasBoot(float volume = 0.6f);         // Das Boot theme - iconic synth melody
 
 private:
     void startTone(uint32_t freq_hz, float volume);
