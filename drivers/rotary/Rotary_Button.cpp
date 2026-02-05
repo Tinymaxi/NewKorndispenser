@@ -3,6 +3,7 @@
 #include "hardware/pio.h"
 #include "pico/time.h"
 #include <stdio.h>
+#include <cmath>
 
 Rotary_Button::Rotary_Button()
 {
@@ -65,18 +66,26 @@ int Rotary_Button::getPosition()
 {
     int raw_pos = readPositionRaw_();
     bool pressed = readPressedRaw_();
+    uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    // Time-based debounce: only update position if enough time has passed
+    // Track when position changes
     if (raw_pos != debounced_pos_) {
-        uint32_t now = to_ms_since_boot(get_absolute_time());
         if (now - last_change_time_ >= DEBOUNCE_MS) {
             debounced_pos_ = raw_pos;
             last_change_time_ = now;
+            last_move_time_ = now;  // Position just changed
         }
     }
 
+    // Only update stable position if current position has been stable for STABLE_MS
+    if (now - last_move_time_ >= STABLE_MS) {
+        stable_pos_ = debounced_pos_;
+    }
+
     updateRing_(debounced_pos_, pressed);
-    return debounced_pos_;
+
+    // Return stable position (immune to recent slips)
+    return stable_pos_;
 }
 
 void Rotary_Button::setZero()
@@ -96,24 +105,100 @@ bool Rotary_Button::isPressed()
 
 void Rotary_Button::updateRing_(int pos, bool pressed)
 {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
     uint8_t idx = wrap_index(pos, (uint8_t)RING_COUNT);
 
-    if ((int)idx == last_idx_ && pressed == last_pressed_)
-        return;
+    // Detect turn direction
+    if (pos != prev_pos_) {
+        turn_direction_ = (pos > prev_pos_) ? 1 : -1;
+        prev_pos_ = pos;
+    }
 
-    last_idx_ = idx;
+    // Detect button press start (for ripple animation)
+    if (pressed && !last_pressed_) {
+        press_start_time_ = now;
+        press_anim_active_ = true;
+    }
     last_pressed_ = pressed;
+    last_idx_ = idx;
 
-    if (!pressed)
-    {
-        ring_->clear();
-        ring_->setIndex(idx, ON_R, ON_G, 60); // 60 gives a nice violet.
+    ring_->clear();
+
+    uint32_t since_move = now - last_move_time_;
+    bool idle = (since_move > IDLE_AFTER_MS);
+
+    // --- PRESS ANIMATION: Expanding ripple ---
+    if (press_anim_active_) {
+        uint32_t elapsed = now - press_start_time_;
+        if (elapsed < PRESS_ANIM_MS) {
+            // Ripple expands from 0 to 6 LEDs on each side
+            float progress = (float)elapsed / PRESS_ANIM_MS;
+            int ripple_radius = (int)(progress * 6);
+
+            // Flash bright at start, then fade
+            float intensity = 1.0f - (progress * 0.7f);
+
+            for (int offset = -ripple_radius; offset <= ripple_radius; offset++) {
+                uint8_t ring_idx = wrap_index(pos + offset, (uint8_t)RING_COUNT);
+                // Edge of ripple is brightest
+                float edge_dist = (float)abs(abs(offset) - ripple_radius);
+                float brightness = intensity * (1.0f - edge_dist * 0.3f);
+                if (brightness < 0.1f) brightness = 0.1f;
+
+                // Bright white/purple flash
+                uint8_t r = (uint8_t)(255 * brightness);
+                uint8_t g = (uint8_t)(150 * brightness);
+                uint8_t b = (uint8_t)(255 * brightness);
+                ring_->setIndex(ring_idx, r, g, b);
+            }
+            ring_->show();
+            return;
+        } else {
+            press_anim_active_ = false;
+        }
     }
-    else
-    {
-        ring_->fill(ON_R, ON_G, ON_B);
-        ring_->setIndex(idx, OFF_R, OFF_G, OFF_B);
+
+    // --- BUTTON HELD: All LEDs lit bright with current position dark ---
+    if (pressed) {
+        ring_->fill(80, 30, 100);  // Brighter purple when held
+        ring_->setIndex(idx, 0, 0, 0);
+        ring_->show();
+        return;
     }
+
+    // --- IDLE: Dramatic pulse/breathing effect ---
+    if (idle) {
+        // Sine wave for smooth breathing (0.05 to 1.0 range - very dim to bright)
+        float phase = (float)(now % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
+        float breath = 0.05f + 0.95f * (0.5f + 0.5f * sinf(phase * 2.0f * 3.14159f));
+
+        // Brighter base colors for more visible pulse
+        uint8_t r = (uint8_t)(80 * breath);
+        uint8_t g = (uint8_t)(30 * breath);
+        uint8_t b = (uint8_t)(120 * breath);  // More purple/violet
+
+        ring_->setIndex(idx, r, g, b);
+        ring_->show();
+        return;
+    }
+
+    // --- TURNING: Comet trail effect (4 LEDs total) ---
+    // Main LED at full brightness - bright violet
+    ring_->setIndex(idx, 80, 30, 120);
+
+    // Trail of 3 LEDs with sharp falloff
+    const float trail_fade[] = {0.35f, 0.12f, 0.03f};  // Much sharper falloff
+    for (int i = 1; i <= 3; i++) {
+        int trail_pos = pos - (turn_direction_ * i);
+        uint8_t trail_idx = wrap_index(trail_pos, (uint8_t)RING_COUNT);
+        float fade = trail_fade[i - 1];
+
+        uint8_t r = (uint8_t)(80 * fade);
+        uint8_t g = (uint8_t)(30 * fade);
+        uint8_t b = (uint8_t)(120 * fade);
+        ring_->setIndex(trail_idx, r, g, b);
+    }
+
     ring_->show();
 }
 

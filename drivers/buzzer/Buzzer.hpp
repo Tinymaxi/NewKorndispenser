@@ -25,6 +25,11 @@ public:
     static std::vector<Note> melodyOdeToJoy(uint32_t tempo_bpm = 120);
     static std::vector<Note> melodyTwinkle(uint32_t tempo_bpm = 100);
 
+    // Special sound effects
+    void playMacStartup(float volume = 0.5f);       // Mac-like startup chime
+    void playCloseEncounters(float volume = 0.5f); // The famous 5-note alien sequence
+    void playMarioCoin(float volume = 0.6f);       // Classic coin "bling!"
+
 private:
     void startTone(uint32_t freq_hz, float volume);
     void stopTone();

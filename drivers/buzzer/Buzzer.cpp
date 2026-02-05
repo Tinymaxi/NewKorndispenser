@@ -100,10 +100,14 @@ void Buzzer::playMelody(const std::vector<Note>& melody, uint32_t gap_ms, float 
 
 // --- Note frequencies ---
 namespace {
+constexpr uint32_t NOTE_C3=130,  NOTE_D3=146,  NOTE_E3=164,  NOTE_F3=174,
+                   NOTE_G3=196,  NOTE_A3=220,  NOTE_B3=246;
 constexpr uint32_t NOTE_C4=261,  NOTE_D4=293,  NOTE_E4=329,  NOTE_F4=349,
                    NOTE_G4=392,  NOTE_A4=440,  NOTE_B4=493;
 constexpr uint32_t NOTE_C5=523,  NOTE_D5=587,  NOTE_E5=659,  NOTE_F5=698,
                    NOTE_G5=784,  NOTE_A5=880,  NOTE_B5=987;
+constexpr uint32_t NOTE_C6=1046, NOTE_D6=1174, NOTE_E6=1318, NOTE_F6=1396,
+                   NOTE_G6=1567, NOTE_A6=1760, NOTE_B6=1975;
 
 static inline uint32_t dur_quarter(uint32_t bpm) {
     return 60000u / std::max<uint32_t>(bpm, 1);
@@ -147,4 +151,52 @@ std::vector<Buzzer::Note> Buzzer::melodyTwinkle(uint32_t tempo_bpm)
         {NOTE_F4, q}, {NOTE_F4, q}, {NOTE_E4, q}, {NOTE_E4, q},
         {NOTE_D4, q}, {NOTE_D4, q}, {NOTE_C4, h}
     };
+}
+
+// --- Special Sound Effects ---
+
+void Buzzer::playMacStartup(float volume)
+{
+    // Mac-like startup chime - warm ascending arpeggio with sustained feel
+    // F#maj chord approximation: F#, A#, C#, F# (octave up)
+    // Using close frequencies for a pleasing "tech startup" sound
+    const uint32_t FS4 = 370;   // F#4
+    const uint32_t AS4 = 466;   // A#4
+    const uint32_t CS5 = 554;   // C#5
+    const uint32_t FS5 = 740;   // F#5
+
+    // Quick arpeggio then hold the high note
+    playTone(FS4, 80, volume);
+    playTone(AS4, 80, volume);
+    playTone(CS5, 80, volume);
+    playTone(FS5, 400, volume);  // Hold the top note
+    rest(50);
+}
+
+void Buzzer::playCloseEncounters(float volume)
+{
+    // The famous 5-note alien sequence from Close Encounters
+    // Notes: G, A, F, F(octave down), C
+    // Iconic "communication" melody
+    const uint32_t dur = 280;  // Each note duration
+    const uint32_t gap = 60;   // Gap between notes
+
+    playTone(NOTE_G4, dur, volume);
+    rest(gap);
+    playTone(NOTE_A4, dur, volume);
+    rest(gap);
+    playTone(NOTE_F4, dur, volume);
+    rest(gap);
+    playTone(NOTE_F3, dur, volume);  // Octave drop!
+    rest(gap);
+    playTone(NOTE_C4, dur + 200, volume);  // Hold the last note longer
+    rest(100);
+}
+
+void Buzzer::playMarioCoin(float volume)
+{
+    // Classic Mario coin "bling!" - two quick high notes
+    // B5 -> E6, very snappy
+    playTone(NOTE_B5, 60, volume);
+    playTone(NOTE_E6, 180, volume);
 }
