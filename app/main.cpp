@@ -61,12 +61,9 @@ int main()
         servos[i]->off();  // Release - no holding torque
     }
 
-    while (!stdio_usb_connected())
-    {
-        sleep_ms(500);
-    }
-
-    printf("Serial connected. Ready.\r\r\n");
+    // Give USB serial a moment to connect (non-blocking)
+    sleep_ms(1000);
+    printf("Ready.\r\r\n");
 
     bz.playMacStartup(); // Mac-like startup chime
     lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
