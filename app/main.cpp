@@ -1,4 +1,5 @@
 #include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -12,6 +13,10 @@
 #include "Servo.hpp"
 #include "Vibrator.hpp"
 #include "PID.hpp"
+
+#include "wifi_config.h"
+#include "dispenser_state.h"
+#include "web_server.h"
 
 constexpr uint BUZZER_PIN = 2;
 constexpr uint SEVENSEG_PIN = 28;
@@ -46,7 +51,8 @@ SevenSeg* sevenSeg = nullptr;
 
 ScaleConfig sc;
 
-// void indicatorArrow(int lineNumber);
+// Shared state for web interface
+DispenserState g_state;
 
 int main()
 {
@@ -65,8 +71,67 @@ int main()
     sleep_ms(1000);
     printf("Ready.\r\r\n");
 
-    bz.playMacStartup(); // Mac-like startup chime
     lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
+
+    // --- WiFi initialization ---
+    if (cyw43_arch_init()) {
+        printf("[wifi] init failed\n");
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("WiFi init failed!");
+        sleep_ms(2000);
+    } else {
+        cyw43_arch_enable_sta_mode();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Connecting WiFi...");
+        lcd.setCursor(1, 0);
+        lcd.print(WIFI_SSID);
+        printf("[wifi] connecting to %s...\n", WIFI_SSID);
+
+        int wifi_err = -1;
+        for (int attempt = 1; attempt <= 3 && wifi_err != 0; attempt++) {
+            printf("[wifi] attempt %d/3...\n", attempt);
+            lcd.setCursor(2, 0);
+            char att_line[21];
+            std::snprintf(att_line, sizeof(att_line), "Attempt %d/3...      ", attempt);
+            lcd.print(att_line);
+
+            wifi_err = cyw43_arch_wifi_connect_timeout_ms(
+                WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 20000);
+
+            if (wifi_err) {
+                printf("[wifi] attempt %d failed: %d\n", attempt, wifi_err);
+            }
+        }
+
+        if (wifi_err) {
+            printf("[wifi] all attempts failed: %d\n", wifi_err);
+            lcd.setCursor(2, 0);
+            char err_line[21];
+            std::snprintf(err_line, sizeof(err_line), "FAILED (err %d)", wifi_err);
+            lcd.print(err_line);
+            lcd.setCursor(3, 0);
+            lcd.print("Continuing offline..");
+            sleep_ms(3000);
+        } else {
+            const ip4_addr_t* ip = netif_ip4_addr(netif_default);
+            char ip_str[20];
+            snprintf(ip_str, sizeof(ip_str), "%s", ip4addr_ntoa(ip));
+            printf("[wifi] connected: %s\n", ip_str);
+
+            lcd.setCursor(2, 0);
+            lcd.print("IP:");
+            lcd.setCursor(3, 0);
+            lcd.print(ip_str);
+
+            // Start web server
+            web_server_init(&g_state, WEB_SERVER_PORT);
+            sleep_ms(2000);
+        }
+    }
+
+    bz.playMacStartup(); // Mac-like startup chime
 
     // Initialize 7-segment display after encoder to avoid PIO conflict
     sevenSegStrip = new Ws2812(SEVENSEG_PIN, SEVENSEG_LEDS);
@@ -190,6 +255,7 @@ int main()
     int last_selected = -1;
     int target_grams = 100;  // default target weight
     int selected_scale = 0;  // 0=Scale1, 1=Scale2, 2=Scale3
+    bool web_start_dispense = false;  // Flag: web UI requested dispense start
 
     // Lambda to draw menu arrow indicator (supports up to 4 rows)
     auto indicatorArrow = [&](int lineNumber, int startRow = 0, int count = 3) {
@@ -199,8 +265,111 @@ int main()
         }
     };
 
+    // Timestamp for periodic background weight reads
+    absolute_time_t last_bg_weight_time = get_absolute_time();
+    int bg_weight_cycle = 0;  // cycles through non-selected scales
+
     while (true)
     {
+        // --- Web state sync: update g_state from local variables ---
+        g_state.selected_scale = selected_scale;
+        g_state.target_grams = target_grams;
+
+        // Read selected scale weight for web at ~4Hz
+        if (absolute_time_diff_us(last_bg_weight_time, get_absolute_time()) > 250000) {
+            g_state.weights[selected_scale] = scales[selected_scale]->read_weight();
+            // Slowly cycle through other scales
+            int other = (selected_scale + 1 + bg_weight_cycle) % 3;
+            if (other != selected_scale) {
+                g_state.weights[other] = scales[other]->read_weight();
+            }
+            bg_weight_cycle = (bg_weight_cycle + 1) % 2;
+            last_bg_weight_time = get_absolute_time();
+        }
+
+        // Update calibration status
+        for (int i = 0; i < 3; i++) {
+            g_state.scale_calibrated[i] =
+                (scales[i]->get_offset() != 0 || scales[i]->get_scale() != 1.0f);
+        }
+
+        // --- Web command dispatch ---
+        WebCommand cmd = g_state.pending_command;
+        if (cmd != WebCommand::None) {
+            g_state.pending_command = WebCommand::None;
+
+            switch (cmd) {
+            case WebCommand::Tare:
+                scales[selected_scale]->tare();
+                bz.playMarioCoin();
+                break;
+
+            case WebCommand::SetTarget:
+                target_grams = g_state.cmd_target;
+                if (target_grams < 1) target_grams = 1;
+                if (target_grams > 9999) target_grams = 9999;
+                break;
+
+            case WebCommand::SelectScale:
+                if (g_state.cmd_scale >= 0 && g_state.cmd_scale <= 2) {
+                    selected_scale = g_state.cmd_scale;
+                }
+                break;
+
+            case WebCommand::StartDispense:
+                // Switch to dispense screen and set flag to auto-start
+                current = ScreenId::Dispense;
+                last_screen = static_cast<ScreenId>(-1);  // force redraw
+                web_start_dispense = true;
+                g_state.dispense_done = false;
+                break;
+
+            case WebCommand::StopDispense:
+                // Stop dispensing - close servo, stop vibrator
+                servos[selected_scale]->writeDegrees(55.0f);
+                vibrators[selected_scale]->off();
+                sleep_ms(300);
+                servos[selected_scale]->off();
+                g_state.dispensing = false;
+                break;
+
+            case WebCommand::TestServo:
+                servos[selected_scale]->writeDegrees(g_state.cmd_servo_angle);
+                break;
+
+            case WebCommand::TestVibrator:
+                vibrators[selected_scale]->setIntensity(g_state.cmd_vib_intensity);
+                break;
+
+            case WebCommand::TestStop:
+                for (int i = 0; i < 3; i++) {
+                    servos[i]->writeDegrees(60.0f);
+                    vibrators[i]->off();
+                }
+                sleep_ms(300);
+                for (int i = 0; i < 3; i++) {
+                    servos[i]->off();
+                }
+                break;
+
+            case WebCommand::Calibrate:
+                if (g_state.cmd_cal_weight > 0) {
+                    scales[selected_scale]->calibrate_scale(
+                        (float)g_state.cmd_cal_weight, 10);
+                    sc.entries[selected_scale].offset_counts =
+                        scales[selected_scale]->get_offset();
+                    sc.entries[selected_scale].count_per_g =
+                        scales[selected_scale]->get_scale();
+                    save_scale_config(sc);
+                    bz.playMarioCoin();
+                }
+                break;
+
+            default:
+                break;
+            }
+        }
+
         // render screen header only when screen changes
         if (current != last_screen)
         {
@@ -872,7 +1041,10 @@ int main()
                 sevenSeg->printNumber(target_grams, 0, 255, 0);
                 sevenSeg->show();
 
-                // Handle button
+                // Handle button or web-initiated start
+                bool do_start = web_start_dispense;
+                web_start_dispense = false;
+
                 if (pressed && !was_pressed_disp) {
                     if (disp_option == 0) {
                         // Set target - go to digit entry, come back here
@@ -880,29 +1052,35 @@ int main()
                         after_target = ScreenId::Dispense;
                         current = ScreenId::SetTargetDigit;
                     } else if (disp_option == 1) {
-                        // Start dispensing - first tare the scale
-                        lcd.setCursor(2, 0);
-                        lcd.print("Taring...           ");
-                        scales[selected_scale]->tare();
-                        bz.playMarioCoin();  // Bling!
-                        sleep_ms(300);  // Wait for tare to settle
-
-                        // Now read the tared weight (should be ~0)
-                        start_weight = scales[selected_scale]->read_weight(3);
-                        pid_setpoint = (double)target_grams;  // Target amount to dispense
-                        pid_input = 0.0;  // Start with 0 dispensed
-                        dispense_pid->SetMode(AUTOMATIC);
-                        disp_state = DispenseState::Running;
-                        disp_option = 0;
-                        last_disp_option = -1;
-                        vibrators[selected_scale]->setIntensity(0.6f);  // 60%
-                        lcd.setCursor(3, 0);
-                        lcd.print("   [Stop]           ");
+                        do_start = true;
                     } else {
                         // Back to menu
                         first_entry_disp = true;
                         current = ScreenId::Menu;
                     }
+                }
+                if (do_start) {
+                    // Start dispensing - first tare the scale
+                    lcd.setCursor(2, 0);
+                    lcd.print("Taring...           ");
+                    scales[selected_scale]->tare();
+                    bz.playMarioCoin();
+                    sleep_ms(300);
+
+                    start_weight = scales[selected_scale]->read_weight(3);
+                    pid_setpoint = (double)target_grams;
+                    pid_input = 0.0;
+                    dispense_pid->SetMode(AUTOMATIC);
+                    disp_state = DispenseState::Running;
+                    disp_option = 0;
+                    last_disp_option = -1;
+                    vibrators[selected_scale]->setIntensity(0.6f);
+                    g_state.dispensing = true;
+                    g_state.dispense_done = false;
+                    g_state.start_weight = start_weight;
+                    g_state.dispensed_grams = 0;
+                    lcd.setCursor(3, 0);
+                    lcd.print("   [Stop]           ");
                 }
                 break;
             }
@@ -922,6 +1100,9 @@ int main()
                 vibrators[selected_scale]->setIntensity(0.6f);
 
                 servos[selected_scale]->writeDegrees(servo_angle);
+
+                // Sync web state
+                g_state.dispensed_grams = dispensed_grams;
 
                 // Update display
                 char line[21];
@@ -953,6 +1134,9 @@ int main()
                     disp_state = DispenseState::Done;
                     disp_option = 0;
                     last_disp_option = -1;
+                    g_state.dispensing = false;
+                    g_state.dispense_done = true;
+                    g_state.dispensed_grams = final_dispensed;
                     bz.playCloseEncounters();  // Dispense complete! (also gives servo time to close)
                     servos[selected_scale]->off();  // Release servo (no holding torque)
                 }
@@ -964,6 +1148,7 @@ int main()
                     dispense_pid->SetMode(MANUAL);
                     sleep_ms(300);  // Give servo time to close
                     servos[selected_scale]->off();  // Release servo
+                    g_state.dispensing = false;
                     disp_state = DispenseState::Idle;
                     disp_option = 1;
                     last_disp_option = -1;

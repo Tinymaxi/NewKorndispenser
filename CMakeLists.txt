@@ -207,6 +207,22 @@ target_link_libraries(servo
     pico_stdlib
 )
 
+# ---------- webserver driver -----------------------------------------------
+add_library(webserver STATIC
+    drivers/webserver/web_server.cpp
+)
+
+target_include_directories(webserver PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/webserver
+    ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
+target_link_libraries(webserver
+    PUBLIC
+        pico_stdlib
+        pico_cyw43_arch_lwip_threadsafe_background
+)
+
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
     app/main.cpp
@@ -215,10 +231,14 @@ add_executable(NewKorndispenser
 pico_set_program_name   (NewKorndispenser "NewKorndispenser")
 pico_set_program_version(NewKorndispenser "0.1")
 
+target_include_directories(NewKorndispenser PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
 target_link_libraries(NewKorndispenser
     buzzer
     rotary
-    neopixel_ring 
+    neopixel_ring
     sevenseg
     ws2812
     hx711
@@ -226,7 +246,9 @@ target_link_libraries(NewKorndispenser
     pid
     servo
     lcd1602_i2c
+    webserver
     pico_stdlib
+    pico_cyw43_arch_lwip_threadsafe_background
 )
 
 pico_enable_stdio_usb(NewKorndispenser 1)
