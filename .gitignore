@@ -6,3 +6,6 @@ build
 
 # clangd index cache
 .cache/
+
+# real WiFi credentials (use wifi_secrets.h.example as template)
+include/wifi_secrets.h
