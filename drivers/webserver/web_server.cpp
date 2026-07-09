@@ -1,6 +1,7 @@
 #include "web_server.h"
 #include "web_page.h"
 #include "dispenser_state.h"
+#include "telemetry.hpp"
 
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
@@ -98,6 +99,17 @@ struct ConnState {
     const char* resp_body;
     int         resp_body_len;
     bool        header_done;  // Header fully queued?
+
+    // CSV log streaming (/api/log.csv) - rows are generated on the fly from the
+    // telemetry buffer, one line at a time, into csv_buf.
+    enum class SendMode : uint8_t { FlashBody, CsvLog };
+    SendMode      mode      = SendMode::FlashBody;
+    TelemetryMeta csv_meta  = {};   // snapshot taken at request time
+    uint32_t      csv_row   = 0;    // next sample index to format
+    uint8_t       csv_phase = 0;    // 0 = metadata+header lines, 1 = rows, 2 = done
+    char          csv_buf[256];     // one formatted line (or the header block)
+    int           csv_len   = 0;
+    int           csv_off   = 0;
 };
 
 // ---------- streaming send with tcp_sent callback ----------------------------
@@ -135,7 +147,7 @@ static err_t send_more(struct tcp_pcb* pcb, ConnState* cs) {
         cs->send_offset = 0;
     }
 
-    // Then send body
+    // Then send body (no COPY flag — body points to static const data in flash)
     while (cs->send_offset < cs->resp_body_len) {
         int avail = (int)tcp_sndbuf(pcb);
         if (avail == 0) {
@@ -144,7 +156,7 @@ static err_t send_more(struct tcp_pcb* pcb, ConnState* cs) {
         }
         int chunk = cs->resp_body_len - cs->send_offset;
         if (chunk > avail) chunk = avail;
-        err_t err = tcp_write(pcb, cs->resp_body + cs->send_offset, chunk, TCP_WRITE_FLAG_COPY);
+        err_t err = tcp_write(pcb, cs->resp_body + cs->send_offset, chunk, 0);
         if (err != ERR_OK) {
             cleanup_conn(pcb, cs);
             return ERR_OK;
@@ -158,9 +170,109 @@ static err_t send_more(struct tcp_pcb* pcb, ConnState* cs) {
     return ERR_OK;
 }
 
+// CSV analogue of send_more(): generates the response line by line from the
+// telemetry buffer. Unlike the flash-body path, lines live in a reused per-
+// connection buffer, so every tcp_write MUST copy; and ERR_MEM means "flush and
+// retry on the next tcp_sent callback", not "abort".
+static err_t send_more_csv(struct tcp_pcb* pcb, ConnState* cs) {
+    // HTTP header first
+    if (!cs->header_done) {
+        while (cs->send_offset < cs->resp_header_len) {
+            int avail = (int)tcp_sndbuf(pcb);
+            if (avail == 0) {
+                tcp_output(pcb);
+                return ERR_OK;  // Wait for tcp_sent callback
+            }
+            int chunk = cs->resp_header_len - cs->send_offset;
+            if (chunk > avail) chunk = avail;
+            err_t err = tcp_write(pcb, cs->resp_header + cs->send_offset, chunk, TCP_WRITE_FLAG_COPY);
+            if (err == ERR_MEM) {
+                tcp_output(pcb);
+                return ERR_OK;  // Retry on next tcp_sent callback
+            }
+            if (err != ERR_OK) {
+                cleanup_conn(pcb, cs);
+                return ERR_OK;
+            }
+            cs->send_offset += chunk;
+        }
+        cs->header_done = true;
+        cs->csv_len = 0;
+        cs->csv_off = 0;
+    }
+
+    while (true) {
+        // Flush the pending line
+        while (cs->csv_off < cs->csv_len) {
+            int avail = (int)tcp_sndbuf(pcb);
+            if (avail == 0) {
+                tcp_output(pcb);
+                return ERR_OK;
+            }
+            int chunk = cs->csv_len - cs->csv_off;
+            if (chunk > avail) chunk = avail;
+            err_t err = tcp_write(pcb, cs->csv_buf + cs->csv_off, chunk, TCP_WRITE_FLAG_COPY);
+            if (err == ERR_MEM) {
+                tcp_output(pcb);
+                return ERR_OK;
+            }
+            if (err != ERR_OK) {
+                cleanup_conn(pcb, cs);
+                return ERR_OK;
+            }
+            cs->csv_off += chunk;
+        }
+
+        // Line drained - generate the next one
+        if (cs->csv_phase == 0) {
+            const TelemetryMeta& m = cs->csv_meta;
+            cs->csv_len = snprintf(cs->csv_buf, sizeof(cs->csv_buf),
+                "# korndispenser-pid-log v1\n"
+                "# run_id=%u,scale=%u,target_g=%u,kp=%.3f,ki=%.4f,kd=%.3f,"
+                "samples=%u,final_g=%.1f,sample_ms=50\n"
+                "t_ms,setpoint_g,dispensed_g,weight_g,servo_deg,p_term,i_term,d_term,vib\n",
+                (unsigned)m.run_id, (unsigned)(m.scale + 1), (unsigned)m.target_g,
+                (double)m.kp, (double)m.ki, (double)m.kd,
+                (unsigned)m.count, (double)m.final_g);
+            cs->csv_off = 0;
+            cs->csv_phase = 1;
+        } else if (cs->csv_phase == 1) {
+            // A new dispense resets the buffer - abandon the stream (short read)
+            if (telem_meta().run_id != cs->csv_meta.run_id) {
+                tcp_output(pcb);
+                cleanup_conn(pcb, cs);
+                return ERR_OK;
+            }
+            if (cs->csv_row >= cs->csv_meta.count) {
+                cs->csv_phase = 2;
+                continue;
+            }
+            const TelemetrySample* s = telem_sample(cs->csv_row);
+            if (!s) {
+                cs->csv_phase = 2;
+                continue;
+            }
+            cs->csv_len = snprintf(cs->csv_buf, sizeof(cs->csv_buf),
+                "%lu,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f\n",
+                (unsigned long)s->t_ms,
+                (double)s->setpoint, (double)s->dispensed, (double)s->weight,
+                (double)s->servo, (double)s->p, (double)s->i, (double)s->d,
+                (double)s->vib);
+            cs->csv_off = 0;
+            cs->csv_row++;
+        } else {
+            // All rows sent - flush and close
+            tcp_output(pcb);
+            cleanup_conn(pcb, cs);
+            return ERR_OK;
+        }
+    }
+}
+
 static err_t tcp_sent_cb(void* arg, struct tcp_pcb* pcb, u16_t len) {
     ConnState* cs = (ConnState*)arg;
     if (!cs) return ERR_OK;
+    if (cs->mode == ConnState::SendMode::CsvLog) return send_more_csv(pcb, cs);
     return send_more(pcb, cs);
 }
 
@@ -202,6 +314,38 @@ static void start_streaming_response(struct tcp_pcb* pcb, ConnState* cs,
     send_more(pcb, cs);
 }
 
+// Start the streamed CSV telemetry response
+static void start_csv_response(struct tcp_pcb* pcb, ConnState* cs) {
+    TelemetryMeta m = telem_meta();
+    if (m.run_id == 0) {
+        // No dispense has ever run - nothing to export
+        send_and_close(pcb, cs, HTTP_404, strlen(HTTP_404));
+        return;
+    }
+
+    cs->mode = ConnState::SendMode::CsvLog;
+    cs->csv_meta = m;   // snapshot: rows < m.count are immutable for this run_id
+    cs->csv_row = 0;
+    cs->csv_phase = 0;
+    cs->csv_len = 0;
+    cs->csv_off = 0;
+
+    // Length is delimited by connection close (no Content-Length).
+    cs->resp_header_len = snprintf(cs->resp_header, sizeof(cs->resp_header),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/csv\r\n"
+        "Content-Disposition: attachment; filename=\"pid_run_%u.csv\"\r\n"
+        "Cache-Control: no-store\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n\r\n",
+        (unsigned)m.run_id);
+    cs->header_done = false;
+    cs->send_offset = 0;
+
+    tcp_sent(pcb, tcp_sent_cb);
+    send_more_csv(pcb, cs);
+}
+
 // ---------- route handling ---------------------------------------------------
 
 static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
@@ -231,7 +375,13 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
 
     // --- GET /api/status ---
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/status") == 0) {
-        char json[512];
+        // Get WiFi signal strength (meaningless in AP mode - UI hides it)
+        int32_t rssi = -100;
+        cyw43_wifi_get_rssi(&cyw43_state, &rssi);
+
+        TelemetryMeta tm = telem_meta();
+
+        char json[768];
         int n = snprintf(json, sizeof(json),
             "{"
             "\"weights\":[%.1f,%.1f,%.1f],"
@@ -240,7 +390,12 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             "\"dispensing\":%s,"
             "\"dispense_done\":%s,"
             "\"dispensed_grams\":%.1f,"
-            "\"scale_calibrated\":[%s,%s,%s]"
+            "\"scale_calibrated\":[%s,%s,%s],"
+            "\"pid\":{\"kp\":%.3f,\"ki\":%.4f,\"kd\":%.3f},"
+            "\"servo\":%.1f,\"vib\":%.2f,"
+            "\"rssi\":%ld,"
+            "\"run\":{\"id\":%u,\"samples\":%u,\"active\":%s},"
+            "\"mode\":\"%s\""
             "}",
             g_state->weights[0], g_state->weights[1], g_state->weights[2],
             g_state->selected_scale,
@@ -250,10 +405,21 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             g_state->dispensed_grams,
             g_state->scale_calibrated[0] ? "true" : "false",
             g_state->scale_calibrated[1] ? "true" : "false",
-            g_state->scale_calibrated[2] ? "true" : "false"
+            g_state->scale_calibrated[2] ? "true" : "false",
+            (double)g_state->pid_kp, (double)g_state->pid_ki, (double)g_state->pid_kd,
+            (double)g_state->servo_angle, (double)g_state->vib_intensity,
+            (long)rssi,
+            (unsigned)tm.run_id, (unsigned)tm.count, tm.active ? "true" : "false",
+            g_state->ap_mode ? "ap" : "sta"
         );
         send_json_response(pcb, cs, json, n);
         return;
+    }
+
+    // --- GET /api/log.csv ---
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/log.csv") == 0) {
+        start_csv_response(pcb, cs);
+        return;  // cs stays alive for callbacks on success
     }
 
     // --- POST routes ---
@@ -311,6 +477,15 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             return;
         }
 
+        if (strcmp(path, "/api/pid") == 0) {
+            g_state->cmd_pid_kp = parse_float_field(body, "kp");
+            g_state->cmd_pid_ki = parse_float_field(body, "ki");
+            g_state->cmd_pid_kd = parse_float_field(body, "kd");
+            g_state->pending_command = WebCommand::SetPID;
+            send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
+            return;
+        }
+
         if (strcmp(path, "/api/calibrate") == 0) {
             g_state->cmd_cal_weight = parse_int_field(body, "weight");
             g_state->pending_command = WebCommand::Calibrate;
@@ -352,10 +527,27 @@ static err_t tcp_recv_cb(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t e
     tcp_recved(pcb, p->tot_len);
     pbuf_free(p);
 
-    // Check if we have a complete request (headers end with \r\n\r\n)
-    if (strstr(cs->req_buf, "\r\n\r\n")) {
-        // Don't delete cs here — handle_request may keep it for streaming
-        handle_request(pcb, cs);
+    // Check if we have a complete request (headers + full body)
+    const char* hdr_end = strstr(cs->req_buf, "\r\n\r\n");
+    if (hdr_end) {
+        int body_offset = (hdr_end - cs->req_buf) + 4;
+        int body_received = cs->req_len - body_offset;
+
+        // Check Content-Length to see if we need to wait for body data
+        int content_length = 0;
+        const char* cl = strstr(cs->req_buf, "Content-Length:");
+        if (!cl) cl = strstr(cs->req_buf, "content-length:");
+        if (cl) {
+            cl += 15; // skip "Content-Length:"
+            while (*cl == ' ') cl++;
+            content_length = atoi(cl);
+        }
+
+        if (body_received >= content_length) {
+            // Don't delete cs here — handle_request may keep it for streaming
+            handle_request(pcb, cs);
+        }
+        // else: wait for more data in next tcp_recv_cb call
     }
 
     return ERR_OK;

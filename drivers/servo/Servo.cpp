@@ -1,4 +1,5 @@
 #include "Servo.hpp"
+#include "SharedSlice.hpp"
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
@@ -33,9 +34,10 @@ void Servo::setupPwmFixed() {
     if (top_d < 1000.0)  top_d = 1000.0;                // keep some resolution
 
     _top = (uint16_t)llround(top_d);
+    _div = (float)div;
 
     pwm_config cfg = pwm_get_default_config();
-    pwm_config_set_clkdiv(&cfg, (float)div);
+    pwm_config_set_clkdiv(&cfg, _div);
     pwm_config_set_wrap(&cfg, _top);
     pwm_init(_slice, &cfg, true);
 }
@@ -44,9 +46,13 @@ void Servo::applyPulseUs(uint16_t us) {
     // period_us = 1e6 / FRAME_HZ ≈ 3003.003...
     const double period_us = 1e6 / (double)FRAME_HZ;
 
+    // When sharing the slice, the coordinator has just forced 333 Hz, so use the
+    // slice's current wrap (== our 333 Hz TOP). Standalone servos use their own TOP.
+    const uint16_t top = _shared ? _shared->currentTop() : _top;
+
     // counts = us * (TOP+1) / period_us
-    uint32_t counts = (uint32_t)llround(((double)us * (double)(_top + 1)) / period_us);
-    if (counts > _top) counts = _top;
+    uint32_t counts = (uint32_t)llround(((double)us * (double)(top + 1)) / period_us);
+    if (counts > top) counts = top;
 
     pwm_set_chan_level(_slice, _channel, (uint16_t)counts);
     pwm_set_enabled(_slice, true);
@@ -54,6 +60,7 @@ void Servo::applyPulseUs(uint16_t us) {
 
 void Servo::writeMicros(uint16_t us) {
     us = clamp_u16(us, US_MIN, US_MAX);
+    if (_shared) _shared->onServoActive();   // ensure 333 Hz on the shared slice first
     applyPulseUs(us);
 }
 
@@ -64,6 +71,13 @@ void Servo::center() {
 void Servo::off() {
     // Stop PWM signal - servo will relax and not hold torque
     pwm_set_chan_level(_slice, _channel, 0);
+    // Release the shared slice back to the vibrator's 20 kHz (if it is running).
+    if (_shared) _shared->onServoIdle();
+}
+
+void Servo::attachShared(SharedSlice* s) {
+    _shared = s;
+    if (s) s->registerServo(_slice, _div, _top);
 }
 
 void Servo::writeDegrees(float deg) {

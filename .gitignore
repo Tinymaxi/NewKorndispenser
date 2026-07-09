@@ -3,3 +3,6 @@ build
 
 # macOS
 .DS_Store
+
+# clangd index cache
+.cache/

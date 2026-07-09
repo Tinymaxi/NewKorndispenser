@@ -28,6 +28,7 @@ void Vibrator::configurePwm20kHz() {
         if (top_calc > 65535u) top_calc = 65535u;
     }
     _top = (uint16_t)top_calc;
+    _div = div;
 
     pwm_config cfg = pwm_get_default_config();
     pwm_config_set_clkdiv(&cfg, div);
@@ -35,10 +36,30 @@ void Vibrator::configurePwm20kHz() {
     pwm_init(_slice, &cfg, true);
 }
 
-void Vibrator::setIntensity(float intensity) {
-    intensity = clamp01(intensity);
-    // duty counts = intensity * (TOP+1)
-    uint16_t level = (uint16_t)((_top + 1u) * intensity);
+void Vibrator::applyLevel(uint16_t top) {
+    // duty counts = intensity * (TOP+1), scaled against the slice's *current* wrap
+    uint16_t level = (uint16_t)((uint32_t)(top + 1u) * _intensity);
     pwm_set_chan_level(_slice, _channel, level);
     pwm_set_enabled(_slice, true);
+}
+
+void Vibrator::reapplyAgainstTop(uint16_t top) {
+    applyLevel(top);
+}
+
+void Vibrator::attachShared(SharedSlice* s) {
+    _shared = s;
+    if (s) s->registerVib(this, _slice, _div, _top);
+}
+
+void Vibrator::setIntensity(float intensity) {
+    _intensity = clamp01(intensity);
+    if (_shared) {
+        // Coordinator picks the frequency (20 kHz while the servo is idle, 333 Hz
+        // while it is active), then we scale our duty to whatever wrap is current.
+        _shared->vibWantsRun();
+        applyLevel(_shared->currentTop());
+    } else {
+        applyLevel(_top);
+    }
 }

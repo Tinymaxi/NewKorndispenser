@@ -12,11 +12,14 @@
 #include "SevenSeg.hpp"
 #include "Servo.hpp"
 #include "Vibrator.hpp"
+#include "SharedSlice.hpp"
 #include "PID.hpp"
+#include "telemetry.hpp"
 
 #include "wifi_config.h"
 #include "dispenser_state.h"
 #include "web_server.h"
+#include "dhserver.h"
 
 constexpr uint BUZZER_PIN = 2;
 constexpr uint SEVENSEG_PIN = 28;
@@ -45,6 +48,11 @@ Vibrator vib2(26);    // Scale 2 vibrator - GPIO 26
 Vibrator vib3(22);    // Scale 3 vibrator - GPIO 22
 Vibrator* vibrators[3] = {&vib1, &vib2, &vib3};
 
+// servo1 (GP7) and vib3 (GP22) both live on PWM slice 3, which can only hold one
+// frequency. This coordinator runs the slice at the servo's 333 Hz whenever servo1
+// is active and hands it back to the vibrator's 20 kHz otherwise (see main()).
+SharedSlice slice3_pwm;
+
 // Pointers - initialized in main() to avoid PIO conflict with encoder
 Ws2812* sevenSegStrip = nullptr;
 SevenSeg* sevenSeg = nullptr;
@@ -54,13 +62,82 @@ ScaleConfig sc;
 // Shared state for web interface
 DispenserState g_state;
 
+// True once cyw43_arch_init() has succeeded - lwIP callbacks may then run in the
+// background IRQ context, and shared state must be guarded with the lwIP lock.
+static bool net_stack_up = false;
+static inline void net_lock()   { if (net_stack_up) cyw43_arch_lwip_begin(); }
+static inline void net_unlock() { if (net_stack_up) cyw43_arch_lwip_end(); }
+
+// PID tuning parameters (mutable for web-based tuning)
+static double Kp = 1.5, Ki = 0.08, Kd = 0.8;
+static PID* dispense_pid = nullptr;
+static bool pid_save_pending = false;  // Deferred flash save (never write mid-dispense)
+
+static void save_pid_gains() {
+    PidConfig pc;
+    pc.kp = (float)Kp;
+    pc.ki = (float)Ki;
+    pc.kd = (float)Kd;
+    save_pid_config(pc);  // stalls IRQs ~100 ms - only call while not dispensing
+}
+
+// --- Access-point fallback ---------------------------------------------------
+// When the router is unreachable, the Pico broadcasts its own network so a phone
+// can join it directly and use the web app at http://192.168.4.1.
+static dhcp_entry_t dhcp_entries[] = {
+    { {0}, {192, 168, 4, 16}, {255, 255, 255, 0}, 24 * 3600 },
+    { {0}, {192, 168, 4, 17}, {255, 255, 255, 0}, 24 * 3600 },
+    { {0}, {192, 168, 4, 18}, {255, 255, 255, 0}, 24 * 3600 },
+    { {0}, {192, 168, 4, 19}, {255, 255, 255, 0}, 24 * 3600 },
+};
+
+static dhcp_config_t dhcp_cfg = {
+    {192, 168, 4, 1},                // server address
+    67,                              // port
+    {192, 168, 4, 1},                // dns (points at us; we run no DNS - harmless)
+    "korn",                          // domain suffix
+    sizeof(dhcp_entries) / sizeof(dhcp_entries[0]),
+    dhcp_entries
+};
+
+static bool start_ap_mode() {
+    cyw43_arch_disable_sta_mode();
+    // The AP netif is auto-configured to 192.168.4.1/24 by the cyw43 driver
+    cyw43_arch_enable_ap_mode(WIFI_AP_SSID, WIFI_AP_PASSWORD, CYW43_AUTH_WPA2_AES_PSK);
+
+    cyw43_arch_lwip_begin();
+    err_t e = dhserv_init(&dhcp_cfg);
+    cyw43_arch_lwip_end();
+    if (e != ERR_OK) {
+        printf("[wifi] AP dhcp server failed: %d\n", (int)e);
+        return false;
+    }
+    printf("[wifi] AP mode: %s at 192.168.4.1\n", WIFI_AP_SSID);
+    return true;
+}
+
 int main()
 {
     stdio_init_all();
 
+    // Load persisted PID gains (if ever saved) before the controller is created
+    {
+        PidConfig pc;
+        if (load_pid_config(pc)) {
+            Kp = pc.kp;
+            Ki = pc.ki;
+            Kd = pc.kd;
+        }
+    }
+
+    // Link servo1 + vib3 on shared PWM slice 3 before any servo/vibrator output, so
+    // the slice frequency is arbitrated from the very first startup close below.
+    servo1.attachShared(&slice3_pwm);
+    vib3.attachShared(&slice3_pwm);
+
     // Close all servos at startup, then release (no holding torque)
     for (int i = 0; i < 3; i++) {
-        servos[i]->writeDegrees(60.0f);  // Closed position
+        servos[i]->writeDegrees(0.0f);  // Closed position
     }
     sleep_ms(500);  // Give servos time to reach position
     for (int i = 0; i < 3; i++) {
@@ -81,40 +158,38 @@ int main()
         lcd.print("WiFi init failed!");
         sleep_ms(2000);
     } else {
-        cyw43_arch_enable_sta_mode();
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Connecting WiFi...");
-        lcd.setCursor(1, 0);
-        lcd.print(WIFI_SSID);
-        printf("[wifi] connecting to %s...\n", WIFI_SSID);
+        net_stack_up = true;
+
+        // Holding the encoder button at boot skips STA and forces AP mode
+        bool force_ap = enc.isPressed();
 
         int wifi_err = -1;
-        for (int attempt = 1; attempt <= 3 && wifi_err != 0; attempt++) {
-            printf("[wifi] attempt %d/3...\n", attempt);
-            lcd.setCursor(2, 0);
-            char att_line[21];
-            std::snprintf(att_line, sizeof(att_line), "Attempt %d/3...      ", attempt);
-            lcd.print(att_line);
+        if (!force_ap) {
+            cyw43_arch_enable_sta_mode();
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("Connecting WiFi...");
+            lcd.setCursor(1, 0);
+            lcd.print(WIFI_SSID);
+            printf("[wifi] connecting to %s...\n", WIFI_SSID);
 
-            wifi_err = cyw43_arch_wifi_connect_timeout_ms(
-                WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 20000);
+            for (int attempt = 1; attempt <= 3 && wifi_err != 0; attempt++) {
+                printf("[wifi] attempt %d/3...\n", attempt);
+                lcd.setCursor(2, 0);
+                char att_line[21];
+                std::snprintf(att_line, sizeof(att_line), "Attempt %d/3...      ", attempt);
+                lcd.print(att_line);
 
-            if (wifi_err) {
-                printf("[wifi] attempt %d failed: %d\n", attempt, wifi_err);
+                wifi_err = cyw43_arch_wifi_connect_timeout_ms(
+                    WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 20000);
+
+                if (wifi_err) {
+                    printf("[wifi] attempt %d failed: %d\n", attempt, wifi_err);
+                }
             }
         }
 
-        if (wifi_err) {
-            printf("[wifi] all attempts failed: %d\n", wifi_err);
-            lcd.setCursor(2, 0);
-            char err_line[21];
-            std::snprintf(err_line, sizeof(err_line), "FAILED (err %d)", wifi_err);
-            lcd.print(err_line);
-            lcd.setCursor(3, 0);
-            lcd.print("Continuing offline..");
-            sleep_ms(3000);
-        } else {
+        if (wifi_err == 0) {
             const ip4_addr_t* ip = netif_ip4_addr(netif_default);
             char ip_str[20];
             snprintf(ip_str, sizeof(ip_str), "%s", ip4addr_ntoa(ip));
@@ -128,6 +203,29 @@ int main()
             // Start web server
             web_server_init(&g_state, WEB_SERVER_PORT);
             sleep_ms(2000);
+        } else {
+            // STA failed (or AP forced) - broadcast our own network instead
+            if (!force_ap) printf("[wifi] all attempts failed: %d\n", wifi_err);
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print(force_ap ? "AP mode (forced)" : "WiFi failed - AP up");
+
+            if (start_ap_mode()) {
+                g_state.ap_mode = true;
+                lcd.setCursor(1, 0);
+                lcd.print("AP: " WIFI_AP_SSID);
+                lcd.setCursor(2, 0);
+                lcd.print("Pass: " WIFI_AP_PASSWORD);
+                lcd.setCursor(3, 0);
+                lcd.print("http://192.168.4.1");
+
+                web_server_init(&g_state, WEB_SERVER_PORT);
+                sleep_ms(4000);
+            } else {
+                lcd.setCursor(3, 0);
+                lcd.print("Continuing offline..");
+                sleep_ms(3000);
+            }
         }
     }
 
@@ -256,6 +354,8 @@ int main()
     int target_grams = 100;  // default target weight
     int selected_scale = 0;  // 0=Scale1, 1=Scale2, 2=Scale3
     bool web_start_dispense = false;  // Flag: web UI requested dispense start
+    bool web_stop_dispense = false;   // Flag: web UI requested dispense stop (consumed by Running state)
+    bool web_active = false;  // When true, hardware input is disabled (web controls only)
 
     // Lambda to draw menu arrow indicator (supports up to 4 rows)
     auto indicatorArrow = [&](int lineNumber, int startRow = 0, int count = 3) {
@@ -272,31 +372,59 @@ int main()
     while (true)
     {
         // --- Web state sync: update g_state from local variables ---
-        g_state.selected_scale = selected_scale;
-        g_state.target_grams = target_grams;
-
-        // Read selected scale weight for web at ~4Hz
+        // Scale reads happen OUTSIDE the lwIP lock (they bit-bang the HX711);
+        // only the g_state assignments are guarded so /api/status snapshots
+        // taken in the lwIP IRQ context can't tear across fields.
+        bool have_weights = false;
+        float w_sel = 0.0f, w_other = 0.0f;
+        int other = (selected_scale + 1 + bg_weight_cycle) % 3;
         if (absolute_time_diff_us(last_bg_weight_time, get_absolute_time()) > 250000) {
-            g_state.weights[selected_scale] = scales[selected_scale]->read_weight();
-            // Slowly cycle through other scales
-            int other = (selected_scale + 1 + bg_weight_cycle) % 3;
+            w_sel = scales[selected_scale]->read_weight();
             if (other != selected_scale) {
-                g_state.weights[other] = scales[other]->read_weight();
+                w_other = scales[other]->read_weight();
             }
+            have_weights = true;
             bg_weight_cycle = (bg_weight_cycle + 1) % 2;
             last_bg_weight_time = get_absolute_time();
         }
 
-        // Update calibration status
+        net_lock();
+        g_state.selected_scale = selected_scale;
+        g_state.target_grams = target_grams;
+        if (have_weights) {
+            g_state.weights[selected_scale] = w_sel;
+            if (other != selected_scale) g_state.weights[other] = w_other;
+        }
+        g_state.pid_kp = (float)Kp;
+        g_state.pid_ki = (float)Ki;
+        g_state.pid_kd = (float)Kd;
         for (int i = 0; i < 3; i++) {
             g_state.scale_calibrated[i] =
                 (scales[i]->get_offset() != 0 || scales[i]->get_scale() != 1.0f);
         }
+        net_unlock();
 
         // --- Web command dispatch ---
-        WebCommand cmd = g_state.pending_command;
+        // Copy the command AND its payload fields atomically, then dispatch from
+        // the locals (a second web request could otherwise overwrite cmd_* mid-use).
+        WebCommand cmd;
+        int   cmd_target, cmd_scale, cmd_cal_weight;
+        float cmd_servo_angle, cmd_vib_intensity;
+        float cmd_pid_kp, cmd_pid_ki, cmd_pid_kd;
+        net_lock();
+        cmd = g_state.pending_command;
+        g_state.pending_command = WebCommand::None;
+        cmd_target        = g_state.cmd_target;
+        cmd_scale         = g_state.cmd_scale;
+        cmd_cal_weight    = g_state.cmd_cal_weight;
+        cmd_servo_angle   = g_state.cmd_servo_angle;
+        cmd_vib_intensity = g_state.cmd_vib_intensity;
+        cmd_pid_kp        = g_state.cmd_pid_kp;
+        cmd_pid_ki        = g_state.cmd_pid_ki;
+        cmd_pid_kd        = g_state.cmd_pid_kd;
+        net_unlock();
         if (cmd != WebCommand::None) {
-            g_state.pending_command = WebCommand::None;
+            web_active = true;  // Web is in control, disable hardware input
 
             switch (cmd) {
             case WebCommand::Tare:
@@ -305,45 +433,47 @@ int main()
                 break;
 
             case WebCommand::SetTarget:
-                target_grams = g_state.cmd_target;
+                target_grams = cmd_target;
                 if (target_grams < 1) target_grams = 1;
                 if (target_grams > 9999) target_grams = 9999;
                 break;
 
             case WebCommand::SelectScale:
-                if (g_state.cmd_scale >= 0 && g_state.cmd_scale <= 2) {
-                    selected_scale = g_state.cmd_scale;
+                if (cmd_scale >= 0 && cmd_scale <= 2) {
+                    selected_scale = cmd_scale;
                 }
                 break;
 
             case WebCommand::StartDispense:
                 // Switch to dispense screen and set flag to auto-start
-                current = ScreenId::Dispense;
-                last_screen = static_cast<ScreenId>(-1);  // force redraw
-                web_start_dispense = true;
-                g_state.dispense_done = false;
+                if (!g_state.dispensing) {
+                    current = ScreenId::Dispense;
+                    last_screen = static_cast<ScreenId>(-1);  // force redraw
+                    web_start_dispense = true;
+                    g_state.dispense_done = false;
+                }
                 break;
 
             case WebCommand::StopDispense:
-                // Stop dispensing - close servo, stop vibrator
-                servos[selected_scale]->writeDegrees(55.0f);
-                vibrators[selected_scale]->off();
-                sleep_ms(300);
-                servos[selected_scale]->off();
-                g_state.dispensing = false;
+                // Route through the Dispense screen's Running state so the state
+                // machine, telemetry and web state all stop consistently. (Closing
+                // the servo here alone is not enough - Running would re-open it.)
+                if (g_state.dispensing) {
+                    web_stop_dispense = true;
+                }
                 break;
 
             case WebCommand::TestServo:
-                servos[selected_scale]->writeDegrees(g_state.cmd_servo_angle);
+                servos[selected_scale]->writeDegrees(cmd_servo_angle);
                 break;
 
             case WebCommand::TestVibrator:
-                vibrators[selected_scale]->setIntensity(g_state.cmd_vib_intensity);
+                vibrators[selected_scale]->setIntensity(cmd_vib_intensity);
                 break;
 
             case WebCommand::TestStop:
                 for (int i = 0; i < 3; i++) {
-                    servos[i]->writeDegrees(60.0f);
+                    servos[i]->writeDegrees(0.0f);
                     vibrators[i]->off();
                 }
                 sleep_ms(300);
@@ -352,10 +482,25 @@ int main()
                 }
                 break;
 
+            case WebCommand::SetPID:
+                Kp = (double)cmd_pid_kp;
+                Ki = (double)cmd_pid_ki;
+                Kd = (double)cmd_pid_kd;
+                if (dispense_pid) {
+                    dispense_pid->SetTunings(Kp, Ki, Kd);
+                }
+                // Persist - but never write flash mid-dispense (IRQ stall)
+                if (!g_state.dispensing) {
+                    save_pid_gains();
+                } else {
+                    pid_save_pending = true;
+                }
+                break;
+
             case WebCommand::Calibrate:
-                if (g_state.cmd_cal_weight > 0) {
+                if (cmd_cal_weight > 0) {
                     scales[selected_scale]->calibrate_scale(
-                        (float)g_state.cmd_cal_weight, 10);
+                        (float)cmd_cal_weight, 10);
                     sc.entries[selected_scale].offset_counts =
                         scales[selected_scale]->get_offset();
                     sc.entries[selected_scale].count_per_g =
@@ -368,6 +513,12 @@ int main()
             default:
                 break;
             }
+        }
+
+        // Flush a PID save that was deferred because a dispense was running
+        if (pid_save_pending && !g_state.dispensing) {
+            pid_save_pending = false;
+            save_pid_gains();
         }
 
         // render screen header only when screen changes
@@ -489,6 +640,58 @@ int main()
                 break;
             }
             last_screen = current;
+        }
+
+        // When web is active, show status on LCD but skip all hardware input.
+        // EXCEPTION: the Dispense screen must keep running - it owns the PID
+        // loop, so a web-started dispense would otherwise never actually run.
+        if (web_active && current != ScreenId::Dispense) {
+            static bool web_lcd_drawn = false;
+
+            // Encoder press (while idle) hands control back to the local UI
+            if (enc.isPressed() && !g_state.dispensing) {
+                web_active = false;
+                web_lcd_drawn = false;
+                current = ScreenId::Menu;
+                last_screen = static_cast<ScreenId>(-1);  // force redraw
+                continue;
+            }
+
+            if (!web_lcd_drawn) {
+                lcd.clear();
+                lcd.setCursor(0, 0);
+                lcd.print("  Web Control Active");
+                web_lcd_drawn = true;
+            }
+            // Show live info on LCD
+            char wline[21];
+            float wg = scales[selected_scale]->read_weight();
+            std::snprintf(wline, sizeof(wline), "Scale %d: %d g      ", selected_scale + 1, (int)(wg + 0.5f));
+            lcd.setCursor(1, 0);
+            lcd.print(wline);
+            std::snprintf(wline, sizeof(wline), "Target: %d g        ", target_grams);
+            lcd.setCursor(2, 0);
+            lcd.print(wline);
+            // WiFi signal strength
+            int32_t rssi = -100;
+            cyw43_wifi_get_rssi(&cyw43_state, &rssi);
+            if (g_state.dispensing) {
+                std::snprintf(wline, sizeof(wline), "Dispensing: %d g    ", (int)(g_state.dispensed_grams + 0.5f));
+            } else {
+                std::snprintf(wline, sizeof(wline), "WiFi: %ld dBm %s", (long)rssi,
+                    rssi > -50 ? "Great" : rssi > -65 ? "Good" : rssi > -75 ? "Fair" : "Weak");
+            }
+            lcd.setCursor(3, 0);
+            lcd.print(wline);
+
+            // Update 7-segment with weight
+            int display_w = (int)(wg + 0.5f);
+            sevenSeg->clear();
+            sevenSeg->printNumber(display_w < 0 ? 0 : display_w, 0, 128, 255);
+            sevenSeg->show();
+
+            sleep_ms(100);
+            continue;  // Skip the hardware input switch below
         }
 
         switch (current)
@@ -962,16 +1165,14 @@ int main()
             static double pid_input = 0.0;
             static double pid_output = 0.0;
             static double pid_setpoint = 0.0;
-            static PID* dispense_pid = nullptr;
-            static const double Kp = 1.5, Ki = 0.08, Kd = 0.8;  // Higher Kd for faster braking
-            static const float TOLERANCE = 0.5f;  // grams tolerance for "done"
-            static const float SERVO_CLOSED = 60.0f;   // closed position
-            static const float SERVO_OPEN = 124.0f;    // fully open (Arduino max)
-            static const float FULL_OPEN_MARGIN = 100.0f;  // Stay full open until this many grams before target
+            // Kp, Ki, Kd and dispense_pid are file-scope statics
+            static const float SERVO_MIN_OPEN = 85.0f;  // where hole starts opening
+            static const float SERVO_OPEN = 170.0f;    // fully open
 
             // Track weight decrease
             static float start_weight = 0.0f;  // Weight when dispense started
             static float final_dispensed = 0.0f;  // Final amount dispensed (for Done screen)
+            static uint32_t dispense_start_ms = 0;  // For telemetry timestamps
 
             if (first_entry_disp) {
                 last_encoder_pos_disp = enc.getPosition();
@@ -985,7 +1186,7 @@ int main()
                 if (dispense_pid == nullptr) {
                     dispense_pid = new PID(&pid_input, &pid_output, &pid_setpoint,
                                           Kp, Ki, Kd, DIRECT);
-                    dispense_pid->SetOutputLimits(SERVO_CLOSED, SERVO_OPEN);  // Output is servo angle directly
+                    dispense_pid->SetOutputLimits(SERVO_MIN_OPEN, SERVO_OPEN);  // Output is servo angle in opening range only
                     dispense_pid->SetSampleTime(50);
                 }
             }
@@ -1060,6 +1261,7 @@ int main()
                     }
                 }
                 if (do_start) {
+                    web_stop_dispense = false;  // Clear any stale stop request
                     // Start dispensing - first tare the scale
                     lcd.setCursor(2, 0);
                     lcd.print("Taring...           ");
@@ -1071,14 +1273,23 @@ int main()
                     pid_setpoint = (double)target_grams;
                     pid_input = 0.0;
                     dispense_pid->SetMode(AUTOMATIC);
+
+                    // Start telemetry capture (under lwIP lock so a CSV download
+                    // in flight can't observe the buffer reset mid-row)
+                    dispense_start_ms = to_ms_since_boot(get_absolute_time());
+                    net_lock();
+                    telem_begin_run((uint8_t)selected_scale, (uint16_t)target_grams,
+                                    (float)Kp, (float)Ki, (float)Kd);
+                    net_unlock();
+
                     disp_state = DispenseState::Running;
                     disp_option = 0;
                     last_disp_option = -1;
-                    vibrators[selected_scale]->setIntensity(0.6f);
+                    net_lock();
                     g_state.dispensing = true;
                     g_state.dispense_done = false;
-                    g_state.start_weight = start_weight;
                     g_state.dispensed_grams = 0;
+                    net_unlock();
                     lcd.setCursor(3, 0);
                     lcd.print("   [Stop]           ");
                 }
@@ -1090,19 +1301,42 @@ int main()
                 // PID control - input is dispensed amount, setpoint is target
                 // PID output is servo angle directly (like Arduino)
                 pid_input = (double)dispensed_grams;
-                dispense_pid->Compute();
+                bool pid_computed = dispense_pid->Compute();
 
                 // Use PID output directly as servo angle
                 float servo_angle = (float)pid_output;
-                if (servo_angle < 70.0f) servo_angle = 70.0f;  // Minimum opening during dispense
 
-                // Keep vibrator at 60% throughout dispensing
-                vibrators[selected_scale]->setIntensity(0.6f);
+                // Vibrator: only activate when <=30g remaining
+                float remaining = (float)target_grams - dispensed_grams;
+                if (remaining <= 30.0f) {
+                    vibrators[selected_scale]->setIntensity(0.6f);
+                } else {
+                    vibrators[selected_scale]->off();
+                }
 
                 servos[selected_scale]->writeDegrees(servo_angle);
 
+                // Log a telemetry sample per actual PID computation (20 Hz)
+                if (pid_computed) {
+                    TelemetrySample ts;
+                    ts.t_ms      = to_ms_since_boot(get_absolute_time()) - dispense_start_ms;
+                    ts.setpoint  = (float)pid_setpoint;
+                    ts.dispensed = dispensed_grams;
+                    ts.weight    = current_grams;
+                    ts.servo     = servo_angle;
+                    ts.p         = (float)dispense_pid->GetLastP();
+                    ts.i         = (float)dispense_pid->GetLastI();
+                    ts.d         = (float)dispense_pid->GetLastD();
+                    ts.vib       = (remaining <= 30.0f) ? 0.6f : 0.0f;
+                    telem_append(ts);
+                }
+
                 // Sync web state
+                net_lock();
                 g_state.dispensed_grams = dispensed_grams;
+                g_state.servo_angle = servo_angle;
+                g_state.vib_intensity = (remaining <= 30.0f) ? 0.6f : 0.0f;
+                net_unlock();
 
                 // Update display
                 char line[21];
@@ -1128,27 +1362,38 @@ int main()
                 if (dispensed_grams >= (float)target_grams) {
                     // Done!
                     final_dispensed = dispensed_grams;  // Remember final amount
-                    servos[selected_scale]->writeDegrees(55.0f);  // Close to 55°
+                    servos[selected_scale]->writeDegrees(0.0f);  // Close servo
                     vibrators[selected_scale]->off();
                     dispense_pid->SetMode(MANUAL);
+                    telem_end_run(final_dispensed);
                     disp_state = DispenseState::Done;
                     disp_option = 0;
                     last_disp_option = -1;
+                    net_lock();
                     g_state.dispensing = false;
                     g_state.dispense_done = true;
                     g_state.dispensed_grams = final_dispensed;
+                    g_state.servo_angle = 0.0f;
+                    g_state.vib_intensity = 0.0f;
+                    net_unlock();
                     bz.playCloseEncounters();  // Dispense complete! (also gives servo time to close)
                     servos[selected_scale]->off();  // Release servo (no holding torque)
                 }
 
-                // Manual stop
-                if (pressed && !was_pressed_disp) {
-                    servos[selected_scale]->writeDegrees(55.0f);  // Close to 55°
+                // Manual stop (encoder press or web STOP)
+                if ((pressed && !was_pressed_disp) || web_stop_dispense) {
+                    web_stop_dispense = false;
+                    servos[selected_scale]->writeDegrees(0.0f);  // Close servo
                     vibrators[selected_scale]->off();
                     dispense_pid->SetMode(MANUAL);
+                    telem_end_run(dispensed_grams);
+                    net_lock();
+                    g_state.servo_angle = 0.0f;
+                    g_state.vib_intensity = 0.0f;
+                    g_state.dispensing = false;
+                    net_unlock();
                     sleep_ms(300);  // Give servo time to close
                     servos[selected_scale]->off();  // Release servo
-                    g_state.dispensing = false;
                     disp_state = DispenseState::Idle;
                     disp_option = 1;
                     last_disp_option = -1;
@@ -1198,6 +1443,14 @@ int main()
                     sevenSeg->printNumber(display_live, 0, 255, 0);  // green - good
                 }
                 sevenSeg->show();
+
+                // A web START while sitting on the Done screen: drop back to Idle,
+                // which consumes web_start_dispense on the next iteration.
+                if (web_start_dispense) {
+                    disp_state = DispenseState::Idle;
+                    disp_option = 1;
+                    last_disp_option = -1;
+                }
 
                 if (pressed && !was_pressed_disp) {
                     if (disp_option == 0) {
@@ -1357,7 +1610,7 @@ int main()
         {
             // Servo test screen - select servo and control angle with encoder
             static int test_servo_selected = 0;  // 0, 1, 2 = servo index
-            static int test_servo_angle = 60;    // 0-180 degrees (55 = closed)
+            static int test_servo_angle = 0;     // 0-180 degrees (0 = closed)
             static int last_encoder_pos_servo = 0;
             static bool first_entry_servo = true;
             static bool was_pressed_servo = false;
@@ -1368,11 +1621,11 @@ int main()
                 first_entry_servo = false;
                 was_pressed_servo = enc.isPressed();  // Capture current state to ignore carry-over press
                 test_servo_selected = 0;
-                test_servo_angle = 60;  // Start at closed position
+                test_servo_angle = 0;  // Start at closed position
                 adjusting_angle = false;
                 // Close all servos
                 for (int i = 0; i < 3; i++) {
-                    servos[i]->writeDegrees(60.0f);
+                    servos[i]->writeDegrees(0.0f);
                 }
             }
 
@@ -1395,8 +1648,8 @@ int main()
                 if (pressed && !was_pressed_servo) {
                     adjusting_angle = false;
                     // Close servo when exiting
-                    servos[test_servo_selected]->writeDegrees(60.0f);
-                    test_servo_angle = 60;
+                    servos[test_servo_selected]->writeDegrees(0.0f);
+                    test_servo_angle = 0;
                 }
             } else {
                 // Encoder selects servo (0, 1, 2) or Back (3)
@@ -1411,8 +1664,8 @@ int main()
                 if (pressed && !was_pressed_servo) {
                     if (test_servo_selected < 3) {
                         adjusting_angle = true;
-                        test_servo_angle = 60;  // Start at closed
-                        servos[test_servo_selected]->writeDegrees(60.0f);
+                        test_servo_angle = 0;  // Start at closed
+                        servos[test_servo_selected]->writeDegrees(0.0f);
                     } else {
                         // Back to test menu
                         first_entry_servo = true;

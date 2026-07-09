@@ -163,6 +163,50 @@ target_link_libraries(lcd1602_i2c
     hardware_i2c
 )
 
+# ---------- DHCP server (for AP fallback mode) -------------------------------
+# Vendored from pico-sdk's btstack 3rd-party (MIT, Sergey Fetisov)
+add_library(dhcpserver STATIC
+    drivers/dhcpserver/dhserver.c
+)
+
+target_include_directories(dhcpserver PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/dhcpserver
+    ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
+target_link_libraries(dhcpserver
+    PUBLIC
+        pico_stdlib
+        pico_cyw43_arch_lwip_threadsafe_background
+)
+
+# ---------- telemetry (PID tuning capture) ----------------------------------
+add_library(telemetry STATIC
+    drivers/telemetry/telemetry.cpp
+)
+
+target_include_directories(telemetry PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/telemetry
+)
+
+target_link_libraries(telemetry
+    pico_stdlib
+)
+
+# ---------- shared PWM slice coordinator -----------------------------------
+add_library(pwm_shared STATIC
+    drivers/pwm/SharedSlice.cpp
+)
+
+target_include_directories(pwm_shared PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}/drivers/pwm
+)
+
+target_link_libraries(pwm_shared
+    pico_stdlib
+    hardware_pwm
+)
+
 # ---------- Vibrator driver ------------------------------------------------
 add_library(vibrator STATIC
     drivers/vibrator/Vibrator.cpp
@@ -173,6 +217,8 @@ target_include_directories(vibrator PUBLIC
 )
 
 target_link_libraries(vibrator
+    PUBLIC
+    pwm_shared
     pico_stdlib
     hardware_pwm
     hardware_clocks
@@ -202,6 +248,8 @@ target_include_directories(servo PUBLIC
 )
 
 target_link_libraries(servo
+    PUBLIC
+    pwm_shared
     hardware_pwm
     hardware_clocks
     pico_stdlib
@@ -219,6 +267,7 @@ target_include_directories(webserver PUBLIC
 
 target_link_libraries(webserver
     PUBLIC
+        telemetry
         pico_stdlib
         pico_cyw43_arch_lwip_threadsafe_background
 )
@@ -245,6 +294,9 @@ target_link_libraries(NewKorndispenser
     vibrator
     pid
     servo
+    pwm_shared
+    telemetry
+    dhcpserver
     lcd1602_i2c
     webserver
     pico_stdlib

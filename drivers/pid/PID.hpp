@@ -53,12 +53,22 @@ class PID
   //Display functions ****************************************************************
 	double GetKp();						  // These functions query the pid for interal values.
 	double GetKi();						  //  they were created mainly for the pid front-end,
-	double GetKd();						  // where it's important to know what is actually 
+	double GetKd();						  // where it's important to know what is actually
 	int GetMode();						  //  inside the PID.
 	int GetDirection();					  //
 
+	// Last computed term contributions (for tuning telemetry). Their sum equals the
+	// pre-clamp output of the most recent Compute() that returned true.
+	double GetLastP() const { return lastPTerm; }   // kp*error (0 when P_ON_M)
+	double GetLastI() const { return lastITerm; }   // clamped integrator sum
+	double GetLastD() const { return lastDTerm; }   // -kd*dInput
+
   private:
 	void Initialize();
+
+	double lastPTerm = 0.0;     // * last P/I/D contributions captured in Compute(),
+	double lastITerm = 0.0;     //   exposed via GetLastP/I/D for tuning telemetry
+	double lastDTerm = 0.0;     //
 	
 	double dispKp;				// * we'll hold on to the tuning parameters in user-entered 
 	double dispKi;				//   format for display purposes

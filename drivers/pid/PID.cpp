@@ -86,6 +86,11 @@ bool PID::Compute()
       else if(output < outMin) output = outMin;
       *myOutput = output;
 
+      /*Capture term contributions for tuning telemetry (GetLastP/I/D)*/
+      lastPTerm = pOnE ? kp * error : 0.0;
+      lastITerm = outputSum;
+      lastDTerm = -kd * dInput;
+
       /*Remember some variables for next time*/
       lastInput = input;
       lastTime = now;
