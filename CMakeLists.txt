@@ -275,6 +275,7 @@ target_link_libraries(webserver
 # ---------- executable -----------------------------------------------------
 add_executable(NewKorndispenser
     app/main.cpp
+    app/screens.cpp
 )
 
 pico_set_program_name   (NewKorndispenser "NewKorndispenser")

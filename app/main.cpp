@@ -14,7 +14,7 @@
 #include "Vibrator.hpp"
 #include "SharedSlice.hpp"
 #include "PID.hpp"
-#include "telemetry.hpp"
+#include "screens.hpp"
 
 #include "wifi_config.h"
 #include "dispenser_state.h"
@@ -341,47 +341,15 @@ int main()
         sleep_ms(2500);
     }
 
-    // lcd.clear();
-    // lcd.setCursor(0, 2);
-    // lcd.print("Menu");
-    // lcd.setCursor(1, 2);
-    // lcd.print("Calibrate");
-    // lcd.setCursor(2, 2);
-    // lcd.print("Weigh");
-
-    enum class ScreenId
-    {
-        Menu,
-        SelectScale,
-        Calibrate1,
-        Calibrate2,
-        SetTarget,
-        SetTargetDigit,
-        Weigh,
-        Dispense,
-        TestMenu,
-        TestVibrator,
-        TestServo
+    // UI context shared by the screen classes (app/screens.cpp) and the web
+    // command dispatcher below
+    UiContext ctx{
+        lcd, enc, bz, scales, servos, vibrators, sevenSeg, sc, g_state,
+        Kp, Ki, Kd, dispense_pid, &net_lock, &net_unlock
     };
 
-    ScreenId current = isConfigured ? ScreenId::Menu : ScreenId::SelectScale;
-    ScreenId last_screen = static_cast<ScreenId>(-1);
-    ScreenId after_select = ScreenId::Calibrate1;  // Where to go after SelectScale
-    ScreenId after_target = ScreenId::Weigh;       // Where to go after SetTargetDigit
-    int last_selected = -1;
-    int target_grams = 100;  // default target weight
-    int selected_scale = 0;  // 0=Scale1, 1=Scale2, 2=Scale3
-    bool web_start_dispense = false;  // Flag: web UI requested dispense start
-    bool web_stop_dispense = false;   // Flag: web UI requested dispense stop (consumed by Running state)
-    bool web_active = false;  // When true, hardware input is disabled (web controls only)
-
-    // Lambda to draw menu arrow indicator (supports up to 4 rows)
-    auto indicatorArrow = [&](int lineNumber, int startRow = 0, int count = 3) {
-        for (int i = 0; i < count; i++) {
-            lcd.setCursor(startRow + i, 0);
-            lcd.writeChar(i == lineNumber ? '>' : ' ');
-        }
-    };
+    ScreenManager mgr;
+    mgr.init(ctx, isConfigured ? ScreenId::Menu : ScreenId::SelectScale);
 
     // Timestamp for periodic background weight reads
     absolute_time_t last_bg_weight_time = get_absolute_time();
@@ -396,11 +364,11 @@ int main()
         bool have_weights = false;
         float w_sel = 0.0f, w_other = 0.0f;
         float gr_sel = 0.0f, gr_other = 0.0f;
-        int other = (selected_scale + 1 + bg_weight_cycle) % 3;
+        int other = (ctx.selected_scale + 1 + bg_weight_cycle) % 3;
         if (absolute_time_diff_us(last_bg_weight_time, get_absolute_time()) > 250000) {
-            w_sel = scales[selected_scale]->read_weight();
-            gr_sel = scales[selected_scale]->last_gross();   // same raw sample
-            if (other != selected_scale) {
+            w_sel = scales[ctx.selected_scale]->read_weight();
+            gr_sel = scales[ctx.selected_scale]->last_gross();   // same raw sample
+            if (other != ctx.selected_scale) {
                 w_other = scales[other]->read_weight();
                 gr_other = scales[other]->last_gross();
             }
@@ -410,12 +378,12 @@ int main()
         }
 
         net_lock();
-        g_state.selected_scale = selected_scale;
-        g_state.target_grams = target_grams;
+        g_state.selected_scale = ctx.selected_scale;
+        g_state.target_grams = ctx.target_grams;
         if (have_weights) {
-            g_state.weights[selected_scale] = w_sel;
-            g_state.gross[selected_scale] = gr_sel;
-            if (other != selected_scale) {
+            g_state.weights[ctx.selected_scale] = w_sel;
+            g_state.gross[ctx.selected_scale] = gr_sel;
+            if (other != ctx.selected_scale) {
                 g_state.weights[other] = w_other;
                 g_state.gross[other] = gr_other;
             }
@@ -444,42 +412,41 @@ int main()
             net_unlock();
             if (!have) break;
 
-            web_active = true;  // Web is in control, disable hardware input
+            ctx.web_active = true;  // Web is in control, disable hardware input
 
             switch (c.cmd) {
             case WebCommand::Tare:
-                scales[selected_scale]->tare();
+                scales[ctx.selected_scale]->tare();
                 bz.playMarioCoin();
                 // Publish the tared reading immediately so the next status poll
                 // shows ~0 instead of the stale pre-tare weight
                 {
-                    float wnew = scales[selected_scale]->read_weight();
+                    float wnew = scales[ctx.selected_scale]->read_weight();
                     net_lock();
-                    g_state.weights[selected_scale] = wnew;
-                    g_state.gross[selected_scale] = scales[selected_scale]->last_gross();
+                    g_state.weights[ctx.selected_scale] = wnew;
+                    g_state.gross[ctx.selected_scale] = scales[ctx.selected_scale]->last_gross();
                     net_unlock();
                 }
                 break;
 
             case WebCommand::SetTarget:
-                target_grams = c.i0;
-                if (target_grams < 1) target_grams = 1;
-                if (target_grams > 9999) target_grams = 9999;
+                ctx.target_grams = c.i0;
+                if (ctx.target_grams < 1) ctx.target_grams = 1;
+                if (ctx.target_grams > 9999) ctx.target_grams = 9999;
                 break;
 
             case WebCommand::SelectScale:
                 if (c.i0 >= 0 && c.i0 <= 2) {
-                    selected_scale = c.i0;
+                    ctx.selected_scale = c.i0;
                 }
                 break;
 
             case WebCommand::StartDispense:
-                // Switch to dispense screen and set flag to auto-start
+                // Jump to the dispense screen and flag it to auto-start
                 if (!g_state.dispensing) {
-                    current = ScreenId::Dispense;
-                    last_screen = static_cast<ScreenId>(-1);  // force redraw
-                    web_start_dispense = true;
+                    ctx.web_start_dispense = true;
                     g_state.dispense_done = false;
+                    mgr.goTo(ctx, ScreenId::Dispense);
                 }
                 break;
 
@@ -488,16 +455,16 @@ int main()
                 // machine, telemetry and web state all stop consistently. (Closing
                 // the servo here alone is not enough - Running would re-open it.)
                 if (g_state.dispensing) {
-                    web_stop_dispense = true;
+                    ctx.web_stop_dispense = true;
                 }
                 break;
 
             case WebCommand::TestServo:
-                servos[selected_scale]->writeDegrees(c.f0);
+                servos[ctx.selected_scale]->writeDegrees(c.f0);
                 break;
 
             case WebCommand::TestVibrator:
-                vibrators[selected_scale]->setIntensity(c.f0);
+                vibrators[ctx.selected_scale]->setIntensity(c.f0);
                 break;
 
             case WebCommand::TestStop:
@@ -528,15 +495,15 @@ int main()
 
             case WebCommand::Calibrate:
                 if (c.i0 > 0) {
-                    scales[selected_scale]->calibrate_scale(
+                    scales[ctx.selected_scale]->calibrate_scale(
                         (float)c.i0, 10);
                     // The tare done before calibration IS the calibrated zero
-                    scales[selected_scale]->set_cal_offset(
-                        scales[selected_scale]->get_offset());
-                    sc.entries[selected_scale].offset_counts =
-                        scales[selected_scale]->get_offset();
-                    sc.entries[selected_scale].count_per_g =
-                        scales[selected_scale]->get_scale();
+                    scales[ctx.selected_scale]->set_cal_offset(
+                        scales[ctx.selected_scale]->get_offset());
+                    sc.entries[ctx.selected_scale].offset_counts =
+                        scales[ctx.selected_scale]->get_offset();
+                    sc.entries[ctx.selected_scale].count_per_g =
+                        scales[ctx.selected_scale]->get_scale();
                     save_scale_config(sc);
                     bz.playMarioCoin();
                 }
@@ -553,139 +520,17 @@ int main()
             save_pid_gains();
         }
 
-        // render screen header only when screen changes
-        if (current != last_screen)
-        {
-            lcd.clear();
-            switch (current)
-            {
-            case ScreenId::Menu:
-                lcd.setCursor(0, 2);
-                lcd.print("Calibrate");
-                lcd.setCursor(1, 2);
-                lcd.print("Dispense");
-                lcd.setCursor(2, 2);
-                lcd.print("Weigh");
-                lcd.setCursor(3, 2);
-                lcd.print("Test");
-                indicatorArrow(0, 0, 4);
-                last_selected = 0;
-                break;
-
-            case ScreenId::SelectScale:
-                lcd.setCursor(0, 0);
-                lcd.print("Select Scale:");
-                lcd.setCursor(1, 2);
-                lcd.print("Scale 1");
-                lcd.setCursor(2, 2);
-                lcd.print("Scale 2");
-                lcd.setCursor(3, 2);
-                lcd.print("Scale 3");
-                indicatorArrow(0, 1, 3);  // Arrow on rows 1-3
-                last_selected = 0;
-                break;
-
-            case ScreenId::Calibrate1:
-            {
-                char title[21];
-                std::snprintf(title, sizeof(title), "Calibrate Scale %d", selected_scale + 1);
-                lcd.setCursor(0, 0);
-                lcd.print(title);
-                lcd.setCursor(1, 0);
-                lcd.print("Remove all weight   ");
-                lcd.setCursor(2, 0);
-                lcd.print("then select:        ");
-                // Row 3 options are drawn in the logic section
-                break;
-            }
-
-            case ScreenId::Calibrate2:
-            {
-                char title[21];
-                std::snprintf(title, sizeof(title), "Scale %d - Step 2", selected_scale + 1);
-                lcd.setCursor(0, 0);
-                lcd.print(title);
-                lcd.setCursor(1, 0);
-                lcd.print("Place known weight");
-                break;
-            }
-
-            case ScreenId::SetTarget:
-                lcd.setCursor(0, 0);
-                lcd.print("Set Target Weight");
-                lcd.setCursor(1, 0);
-                lcd.print("Use encoder to adjust");
-                lcd.setCursor(2, 0);
-                lcd.print("Press to confirm");
-                break;
-
-            case ScreenId::SetTargetDigit:
-                lcd.setCursor(0, 0);
-                lcd.print("Set Target Weight");
-                lcd.setCursor(1, 0);
-                lcd.print("Enter grams:");
-                break;
-
-            case ScreenId::Weigh:
-            {
-                char title[21];
-                std::snprintf(title, sizeof(title), "Weighing - Scale %d", selected_scale + 1);
-                lcd.setCursor(0, 0);
-                lcd.print(title);
-                break;
-            }
-
-            case ScreenId::Dispense:
-            {
-                char title[21];
-                std::snprintf(title, sizeof(title), "Dispense - Scale %d", selected_scale + 1);
-                lcd.setCursor(0, 0);
-                lcd.print(title);
-                break;
-            }
-
-            case ScreenId::TestMenu:
-                lcd.setCursor(0, 0);
-                lcd.print("Test Menu");
-                lcd.setCursor(1, 2);
-                lcd.print("Vibrators");
-                lcd.setCursor(2, 2);
-                lcd.print("Servos");
-                lcd.setCursor(3, 2);
-                lcd.print("Back");
-                indicatorArrow(0, 1, 3);
-                last_selected = 0;
-                break;
-
-            case ScreenId::TestVibrator:
-                lcd.setCursor(0, 0);
-                lcd.print("Test Vibrators");
-                lcd.setCursor(1, 0);
-                lcd.print("Select: 1  2  3");
-                break;
-
-            case ScreenId::TestServo:
-                lcd.setCursor(0, 0);
-                lcd.print("Test Servos");
-                lcd.setCursor(1, 0);
-                lcd.print("Select: 1  2  3");
-                break;
-            }
-            last_screen = current;
-        }
-
         // When web is active, show status on LCD but skip all hardware input.
         // EXCEPTION: the Dispense screen must keep running - it owns the PID
         // loop, so a web-started dispense would otherwise never actually run.
-        if (web_active && current != ScreenId::Dispense) {
+        if (ctx.web_active && mgr.currentId() != ScreenId::Dispense) {
             static bool web_lcd_drawn = false;
 
             // Encoder press (while idle) hands control back to the local UI
             if (enc.isPressed() && !g_state.dispensing) {
-                web_active = false;
+                ctx.web_active = false;
                 web_lcd_drawn = false;
-                current = ScreenId::Menu;
-                last_screen = static_cast<ScreenId>(-1);  // force redraw
+                mgr.goTo(ctx, ScreenId::Menu);
                 continue;
             }
 
@@ -697,11 +542,11 @@ int main()
             }
             // Show live info on LCD
             char wline[21];
-            float wg = scales[selected_scale]->read_weight();
-            std::snprintf(wline, sizeof(wline), "Scale %d: %d g      ", selected_scale + 1, (int)(wg + 0.5f));
+            float wg = scales[ctx.selected_scale]->read_weight();
+            std::snprintf(wline, sizeof(wline), "Scale %d: %d g      ", ctx.selected_scale + 1, (int)(wg + 0.5f));
             lcd.setCursor(1, 0);
             lcd.print(wline);
-            std::snprintf(wline, sizeof(wline), "Target: %d g        ", target_grams);
+            std::snprintf(wline, sizeof(wline), "Target: %d g        ", ctx.target_grams);
             lcd.setCursor(2, 0);
             lcd.print(wline);
             // WiFi signal strength
@@ -723,1035 +568,10 @@ int main()
             sevenSeg->show();
 
             sleep_ms(100);
-            continue;  // Skip the hardware input switch below
+            continue;  // Web owns the UI; skip the screen tick
         }
 
-        switch (current)
-        {
-        case ScreenId::Menu:
-        {
-            // robust mod for negatives (4 menu items now)
-            int pos = enc.getPosition();
-            int selected = ((pos % 4) + 4) % 4;
-
-            if (selected != last_selected)
-            {
-                indicatorArrow(selected, 0, 4);
-                last_selected = selected;
-            }
-
-            // Navigation on button press
-            if (enc.isPressed())
-            {
-                if (selected == 0) {
-                    after_select = ScreenId::Calibrate1;
-                    current = ScreenId::SelectScale;
-                } else if (selected == 1) {
-                    after_select = ScreenId::Dispense;
-                    current = ScreenId::SelectScale;
-                } else if (selected == 2) {
-                    after_select = ScreenId::Weigh;
-                    current = ScreenId::SelectScale;
-                } else {
-                    // Test - go to test submenu
-                    current = ScreenId::TestMenu;
-                }
-            }
-            break;
-        }
-
-        case ScreenId::SelectScale:
-        {
-            int pos = enc.getPosition();
-            int selected = ((pos % 3) + 3) % 3;
-
-            if (selected != last_selected)
-            {
-                indicatorArrow(selected, 1, 3);  // Arrow on rows 1-3
-                last_selected = selected;
-            }
-
-            if (enc.isPressed())
-            {
-                selected_scale = selected;  // 0, 1, or 2
-                current = after_select;     // Go to Calibrate1 or Weigh
-            }
-            break;
-        }
-
-        case ScreenId::Calibrate1:
-        {
-            // Option selection: Tare or Back
-            static int cal1_option = 0;  // 0=Tare, 1=Back
-            static int last_cal1_option = -1;
-            static int last_encoder_pos_cal1 = 0;
-            static bool first_entry_cal1 = true;
-            static bool was_pressed_cal1 = false;
-
-            if (first_entry_cal1) {
-                last_encoder_pos_cal1 = enc.getPosition();
-                first_entry_cal1 = false;
-                was_pressed_cal1 = enc.isPressed();
-                cal1_option = 0;
-                last_cal1_option = -1;
-            }
-
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_cal1;
-            if (delta != 0) {
-                cal1_option += delta;
-                if (cal1_option < 0) cal1_option = 0;
-                if (cal1_option > 1) cal1_option = 1;
-                last_encoder_pos_cal1 = pos;
-            }
-
-            // Update option display
-            if (cal1_option != last_cal1_option) {
-                char opt_line[21];
-                std::snprintf(opt_line, sizeof(opt_line), "   %s%s%s%s%s%s",
-                    cal1_option == 0 ? "[" : " ", "Tare", cal1_option == 0 ? "]" : " ",
-                    cal1_option == 1 ? "[" : " ", "Back", cal1_option == 1 ? "]" : " ");
-                lcd.setCursor(3, 0);
-                lcd.print(opt_line);
-                last_cal1_option = cal1_option;
-            }
-
-            bool pressed = enc.isPressed();
-            if (pressed && !was_pressed_cal1) {
-                if (cal1_option == 0) {
-                    // Tare and continue
-                    scales[selected_scale]->tare();
-                    bz.playMarioCoin();  // Bling!
-                    first_entry_cal1 = true;
-                    current = ScreenId::Calibrate2;
-                } else {
-                    // Back to menu
-                    first_entry_cal1 = true;
-                    current = ScreenId::Menu;
-                }
-            }
-            was_pressed_cal1 = pressed;
-
-            sleep_ms(50);
-            break;
-        }
-
-        case ScreenId::Calibrate2:
-        {
-            // Digit entry: 4 digits + OK + Back buttons
-            // Navigation mode: encoder moves cursor, button enters edit/confirms
-            // Edit mode: encoder changes digit value, button exits edit
-            static int digits[4] = {1, 0, 5, 6};  // Default 1056g
-            static int cursor_pos = 0;  // 0-3 = digits, 4 = OK, 5 = Back
-            static int last_encoder_pos = 0;
-            static bool first_entry = true;
-            static bool was_pressed = false;
-            static bool edit_mode = false;
-
-            if (first_entry) {
-                last_encoder_pos = enc.getPosition();
-                first_entry = false;
-                was_pressed = enc.isPressed();
-                cursor_pos = 0;
-                edit_mode = false;
-            }
-
-            bool pressed = enc.isPressed();
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos;
-
-            if (edit_mode) {
-                // Edit mode: encoder changes digit value
-                if (delta != 0) {
-                    digits[cursor_pos] = ((digits[cursor_pos] + delta) % 10 + 10) % 10;
-                    last_encoder_pos = pos;
-                }
-                // Button exits edit mode
-                if (pressed && !was_pressed) {
-                    edit_mode = false;
-                }
-            } else {
-                // Navigation mode: encoder moves cursor
-                if (delta != 0) {
-                    cursor_pos += delta;
-                    if (cursor_pos < 0) cursor_pos = 0;
-                    if (cursor_pos > 5) cursor_pos = 5;  // 0-3=digits, 4=OK, 5=Back
-                    last_encoder_pos = pos;
-                }
-                // Button enters edit mode or confirms OK/Back
-                if (pressed && !was_pressed) {
-                    if (cursor_pos < 4) {
-                        // Enter edit mode for this digit
-                        edit_mode = true;
-                    } else if (cursor_pos == 4) {
-                        // OK pressed - calibrate selected scale
-                        int known_grams = digits[0] * 1000 + digits[1] * 100 +
-                                          digits[2] * 10 + digits[3];
-                        if (known_grams < 1) known_grams = 1;
-
-                        scales[selected_scale]->calibrate_scale((float)known_grams, 10);
-                        // The tare done in step 1 IS the calibrated zero
-                        scales[selected_scale]->set_cal_offset(scales[selected_scale]->get_offset());
-
-                        // Save to flash (entry index matches scale index)
-                        sc.entries[selected_scale].offset_counts = scales[selected_scale]->get_offset();
-                        sc.entries[selected_scale].count_per_g = scales[selected_scale]->get_scale();
-                        save_scale_config(sc);
-
-                        first_entry = true;
-                        current = ScreenId::Menu;
-                    } else {
-                        // Back pressed - return to menu without saving
-                        first_entry = true;
-                        current = ScreenId::Menu;
-                    }
-                }
-            }
-            was_pressed = pressed;
-
-            // Display with edit indicator: brackets around digit being edited
-            char line1[21];
-            if (edit_mode) {
-                // Show brackets around the digit being edited
-                char d[4][4];
-                for (int i = 0; i < 4; i++) {
-                    if (i == cursor_pos) {
-                        std::snprintf(d[i], 4, "[%d]", digits[i]);
-                    } else {
-                        std::snprintf(d[i], 4, " %d ", digits[i]);
-                    }
-                }
-                std::snprintf(line1, sizeof(line1), "%s%s%s%sg", d[0], d[1], d[2], d[3]);
-            } else {
-                // Format: "1 0 5 6 g [OK][Back]" - compact to fit
-                std::snprintf(line1, sizeof(line1), "%d %d %d %d g %s%s",
-                             digits[0], digits[1], digits[2], digits[3],
-                             cursor_pos == 4 ? "[OK]" : " OK ",
-                             cursor_pos == 5 ? "[Back]" : " Back ");
-            }
-            lcd.setCursor(2, 0);
-            lcd.print(line1);
-
-            // Cursor line (only in navigation mode)
-            char line2[21] = "                    ";
-            if (!edit_mode && cursor_pos < 4) {
-                // Cursor under digits: positions 0, 2, 4, 6
-                int cursor_x = cursor_pos * 2;
-                line2[cursor_x] = '^';
-            }
-            lcd.setCursor(3, 0);
-            lcd.print(line2);
-
-            sleep_ms(50);
-            break;
-        }
-
-        case ScreenId::SetTarget:
-        {
-            static int last_encoder_pos_target = 0;
-            static bool first_entry_target = true;
-
-            if (first_entry_target) {
-                last_encoder_pos_target = enc.getPosition();
-                first_entry_target = false;
-            }
-
-            // Adjust target with encoder
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_target;
-            if (delta != 0) {
-                target_grams += delta;
-                if (target_grams < 1) target_grams = 1;
-                if (target_grams > 9999) target_grams = 9999;
-                last_encoder_pos_target = pos;
-            }
-
-            // Show target on 7-segment display
-            sevenSeg->clear();
-            sevenSeg->printNumber(target_grams, 0, 255, 0);  // green
-            sevenSeg->show();
-
-            // Show on LCD too
-            char line[21];
-            std::snprintf(line, sizeof(line), "Target: %d g    ", target_grams);
-            lcd.setCursor(3, 0);
-            lcd.print(line);
-
-            // Button press confirms and goes to Weigh
-            if (enc.isPressed()) {
-                first_entry_target = true;
-                current = ScreenId::Weigh;
-            }
-
-            sleep_ms(50);
-            break;
-        }
-
-        case ScreenId::SetTargetDigit:
-        {
-            // Digit entry for target weight (same UI as calibration)
-            static int target_digits[4] = {0, 1, 0, 0};  // Default 100g
-            static int target_cursor_pos = 0;  // 0-3 = digits, 4 = OK
-            static int last_encoder_pos_td = 0;
-            static bool first_entry_td = true;
-            static bool was_pressed_td = false;
-            static bool edit_mode_td = false;
-
-            if (first_entry_td) {
-                // Initialize digits from current target_grams
-                target_digits[0] = (target_grams / 1000) % 10;
-                target_digits[1] = (target_grams / 100) % 10;
-                target_digits[2] = (target_grams / 10) % 10;
-                target_digits[3] = target_grams % 10;
-                last_encoder_pos_td = enc.getPosition();
-                first_entry_td = false;
-                was_pressed_td = false;
-                target_cursor_pos = 0;
-                edit_mode_td = false;
-            }
-
-            bool pressed = enc.isPressed();
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_td;
-
-            if (edit_mode_td) {
-                // Edit mode: encoder changes digit value
-                if (delta != 0) {
-                    target_digits[target_cursor_pos] = ((target_digits[target_cursor_pos] + delta) % 10 + 10) % 10;
-                    last_encoder_pos_td = pos;
-                }
-                // Button exits edit mode
-                if (pressed && !was_pressed_td) {
-                    edit_mode_td = false;
-                }
-            } else {
-                // Navigation mode: encoder moves cursor
-                if (delta != 0) {
-                    target_cursor_pos += delta;
-                    if (target_cursor_pos < 0) target_cursor_pos = 0;
-                    if (target_cursor_pos > 4) target_cursor_pos = 4;
-                    last_encoder_pos_td = pos;
-                }
-                // Button enters edit mode or confirms OK
-                if (pressed && !was_pressed_td) {
-                    if (target_cursor_pos < 4) {
-                        // Enter edit mode for this digit
-                        edit_mode_td = true;
-                    } else {
-                        // OK pressed - set target and return to caller
-                        target_grams = target_digits[0] * 1000 + target_digits[1] * 100 +
-                                      target_digits[2] * 10 + target_digits[3];
-                        if (target_grams < 1) target_grams = 1;
-
-                        first_entry_td = true;
-                        current = after_target;
-                    }
-                }
-            }
-            was_pressed_td = pressed;
-
-            // Display with edit indicator
-            char line1[21];
-            if (edit_mode_td) {
-                char d[4][4];
-                for (int i = 0; i < 4; i++) {
-                    if (i == target_cursor_pos) {
-                        std::snprintf(d[i], 4, "[%d]", target_digits[i]);
-                    } else {
-                        std::snprintf(d[i], 4, " %d ", target_digits[i]);
-                    }
-                }
-                std::snprintf(line1, sizeof(line1), "%s%s%s%s OK",
-                             d[0], d[1], d[2], d[3]);
-            } else {
-                std::snprintf(line1, sizeof(line1), " %d  %d  %d  %d %s",
-                             target_digits[0], target_digits[1], target_digits[2], target_digits[3],
-                             target_cursor_pos == 4 ? "[OK]" : " OK ");
-            }
-            lcd.setCursor(2, 0);
-            lcd.print(line1);
-
-            // Cursor line (only in navigation mode)
-            char line2[21] = "                    ";
-            if (!edit_mode_td) {
-                int cursor_x = 1 + target_cursor_pos * 3;
-                if (target_cursor_pos == 4) cursor_x = 13;
-                line2[cursor_x] = '^';
-            }
-            lcd.setCursor(3, 0);
-            lcd.print(line2);
-
-            // Show current value on 7-segment
-            int preview = target_digits[0] * 1000 + target_digits[1] * 100 +
-                         target_digits[2] * 10 + target_digits[3];
-            sevenSeg->clear();
-            sevenSeg->printNumber(preview, 0, 255, 0);  // green
-            sevenSeg->show();
-
-            sleep_ms(50);
-            break;
-        }
-
-        case ScreenId::Weigh:
-        {
-            // State for option selection in Weigh screen
-            static int weigh_option = 0;  // 0=Tare, 1=Target, 2=Back
-            static int last_weigh_option = -1;
-            static int last_encoder_pos_weigh = 0;
-            static bool first_entry_weigh = true;
-            static bool was_pressed_weigh = false;
-
-            if (first_entry_weigh) {
-                last_encoder_pos_weigh = enc.getPosition();
-                first_entry_weigh = false;
-                was_pressed_weigh = false;
-                weigh_option = 0;
-                last_weigh_option = -1;
-            }
-
-            // Read weight from selected scale
-            float grams = scales[selected_scale]->read_weight();
-            int display_grams = (int)(grams + 0.5f);  // round to nearest gram
-
-            // Display on 7-segment (color based on target)
-            sevenSeg->clear();
-            if (display_grams < target_grams - 5) {
-                // Under target: blue
-                sevenSeg->printNumber(display_grams, 0, 0, 255);
-            } else if (display_grams > target_grams + 5) {
-                // Over target: red
-                sevenSeg->printNumber(display_grams, 255, 0, 0);
-            } else {
-                // At target: green
-                sevenSeg->printNumber(display_grams, 0, 255, 0);
-            }
-            sevenSeg->show();
-
-            // Also show on LCD
-            char line[21];
-            std::snprintf(line, sizeof(line), "Weight: %d g    ", display_grams);
-            lcd.setCursor(1, 0);
-            lcd.print(line);
-            std::snprintf(line, sizeof(line), "Target: %d g    ", target_grams);
-            lcd.setCursor(2, 0);
-            lcd.print(line);
-
-            // Handle encoder for option selection
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_weigh;
-            if (delta != 0) {
-                weigh_option += delta;
-                if (weigh_option < 0) weigh_option = 0;
-                if (weigh_option > 2) weigh_option = 2;
-                last_encoder_pos_weigh = pos;
-            }
-
-            // Update option display if changed
-            if (weigh_option != last_weigh_option) {
-                // Format: "[Tare][Target][Back]" - no spacing between options
-                char opt_line[21];
-                std::snprintf(opt_line, sizeof(opt_line), "%s%s%s%s%s%s%s%s%s",
-                    weigh_option == 0 ? "[" : " ", "Tare", weigh_option == 0 ? "]" : " ",
-                    weigh_option == 1 ? "[" : " ", "Target", weigh_option == 1 ? "]" : " ",
-                    weigh_option == 2 ? "[" : " ", "Back", weigh_option == 2 ? "]" : " ");
-                lcd.setCursor(3, 0);
-                lcd.print(opt_line);
-                last_weigh_option = weigh_option;
-            }
-
-            // Handle button press
-            bool pressed = enc.isPressed();
-            if (pressed && !was_pressed_weigh) {
-                if (weigh_option == 0) {
-                    // Tare - zero the scale
-                    scales[selected_scale]->tare();
-                    bz.playMarioCoin();  // Bling!
-                } else if (weigh_option == 1) {
-                    // Target - go to digit entry
-                    first_entry_weigh = true;
-                    after_target = ScreenId::Weigh;
-                    current = ScreenId::SetTargetDigit;
-                } else {
-                    // Back to menu
-                    first_entry_weigh = true;
-                    current = ScreenId::Menu;
-                }
-            }
-            was_pressed_weigh = pressed;
-
-            sleep_ms(20);  // faster update for weighing
-            break;
-        }
-
-        case ScreenId::Dispense:
-        {
-            // Dispense state machine
-            // NOTE: Weight DECREASES as corn is dispensed from hanging bag
-            enum class DispenseState { Idle, Running, Done };
-            static DispenseState disp_state = DispenseState::Idle;
-            static int disp_option = 0;  // 0=Target, 1=Start, 2=Back (Idle) or 0=Stop (Running) or 0=OK, 1=Retry (Done)
-            static int last_disp_option = -1;
-            static int last_encoder_pos_disp = 0;
-            static bool first_entry_disp = true;
-            static bool was_pressed_disp = false;
-
-            // PID variables - values from working Arduino code
-            static double pid_input = 0.0;
-            static double pid_output = 0.0;
-            static double pid_setpoint = 0.0;
-            // Kp, Ki, Kd and dispense_pid are file-scope statics
-            static const float SERVO_MIN_OPEN = 85.0f;  // where hole starts opening
-            static const float SERVO_OPEN = 170.0f;    // fully open
-
-            // Track weight decrease
-            static float start_weight = 0.0f;  // Weight when dispense started
-            static float final_dispensed = 0.0f;  // Final amount dispensed (for Done screen)
-            static uint32_t dispense_start_ms = 0;  // For telemetry timestamps
-
-            if (first_entry_disp) {
-                last_encoder_pos_disp = enc.getPosition();
-                first_entry_disp = false;
-                was_pressed_disp = enc.isPressed();  // Capture current state to ignore carry-over press
-                disp_state = DispenseState::Idle;
-                disp_option = 1;  // Default to Start
-                last_disp_option = -1;
-
-                // Create PID if needed
-                if (dispense_pid == nullptr) {
-                    dispense_pid = new PID(&pid_input, &pid_output, &pid_setpoint,
-                                          Kp, Ki, Kd, DIRECT);
-                    dispense_pid->SetOutputLimits(SERVO_MIN_OPEN, SERVO_OPEN);  // Output is servo angle in opening range only
-                    // 100 ms matches the HX711's ~10 SPS so every PID compute
-                    // sees a genuinely new sample
-                    dispense_pid->SetSampleTime(100);
-                }
-            }
-
-            // Read current weight from scale (3-sample average for noise reduction)
-            // Freshest-available non-blocking read (a 3-sample read would block
-            // ~300 ms and throttle the PID loop to ~3 Hz)
-            float current_grams = scales[selected_scale]->read_weight();
-            float current_gross = scales[selected_scale]->last_gross();
-            // Calculate how much has been dispensed (weight decrease = positive dispensed)
-            float dispensed_grams = start_weight - current_grams;
-            int display_dispensed = (int)(dispensed_grams + 0.5f);
-            if (display_dispensed < 0) display_dispensed = 0;  // Don't show negative
-
-            // Handle encoder
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_disp;
-            bool pressed = enc.isPressed();
-
-            switch (disp_state) {
-            case DispenseState::Idle:
-            {
-                // Options: [Target] [Start] [Back]
-                if (delta != 0) {
-                    disp_option += delta;
-                    if (disp_option < 0) disp_option = 0;
-                    if (disp_option > 2) disp_option = 2;
-                    last_encoder_pos_disp = pos;
-                }
-
-                // Update display
-                if (disp_option != last_disp_option) {
-                    const char* opts[3] = {"Target", "Start", "Back"};
-                    char opt_line[21];
-                    std::snprintf(opt_line, sizeof(opt_line), "%s%s%s%s%s%s%s%s%s",
-                        disp_option == 0 ? "[" : " ", opts[0], disp_option == 0 ? "]" : " ",
-                        disp_option == 1 ? "[" : " ", opts[1], disp_option == 1 ? "]" : " ",
-                        disp_option == 2 ? "[" : " ", opts[2], disp_option == 2 ? "]" : " ");
-                    lcd.setCursor(3, 0);
-                    lcd.print(opt_line);
-                    last_disp_option = disp_option;
-                }
-
-                // Show current state on LCD
-                char line[21];
-                std::snprintf(line, sizeof(line), "Target: %d g    ", target_grams);
-                lcd.setCursor(1, 0);
-                lcd.print(line);
-                int display_current = (int)(current_grams + 0.5f);
-                std::snprintf(line, sizeof(line), "Current: %d g   ", display_current);
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-
-                // 7-segment shows target
-                sevenSeg->clear();
-                sevenSeg->printNumber(target_grams, 0, 255, 0);
-                sevenSeg->show();
-
-                // Handle button or web-initiated start
-                bool do_start = web_start_dispense;
-                web_start_dispense = false;
-
-                if (pressed && !was_pressed_disp) {
-                    if (disp_option == 0) {
-                        // Set target - go to digit entry, come back here
-                        first_entry_disp = true;
-                        after_target = ScreenId::Dispense;
-                        current = ScreenId::SetTargetDigit;
-                    } else if (disp_option == 1) {
-                        do_start = true;
-                    } else {
-                        // Back to menu
-                        first_entry_disp = true;
-                        current = ScreenId::Menu;
-                    }
-                }
-                if (do_start) {
-                    web_stop_dispense = false;  // Clear any stale stop request
-                    // Start dispensing - first tare the scale
-                    lcd.setCursor(2, 0);
-                    lcd.print("Taring...           ");
-                    scales[selected_scale]->tare();
-                    bz.playMarioCoin();
-                    sleep_ms(300);
-
-                    start_weight = scales[selected_scale]->read_weight(3);
-                    pid_setpoint = (double)target_grams;
-                    pid_input = 0.0;
-                    dispense_pid->SetMode(AUTOMATIC);
-
-                    // Start telemetry capture (under lwIP lock so a CSV download
-                    // in flight can't observe the buffer reset mid-row)
-                    dispense_start_ms = to_ms_since_boot(get_absolute_time());
-                    net_lock();
-                    telem_begin_run((uint8_t)selected_scale, (uint16_t)target_grams,
-                                    (float)Kp, (float)Ki, (float)Kd);
-                    net_unlock();
-
-                    disp_state = DispenseState::Running;
-                    disp_option = 0;
-                    last_disp_option = -1;
-                    net_lock();
-                    g_state.dispensing = true;
-                    g_state.dispense_done = false;
-                    g_state.dispensed_grams = 0;
-                    net_unlock();
-                    lcd.setCursor(3, 0);
-                    lcd.print("   [Stop]           ");
-                }
-                break;
-            }
-
-            case DispenseState::Running:
-            {
-                // PID control - input is dispensed amount, setpoint is target
-                // PID output is servo angle directly (like Arduino)
-                pid_input = (double)dispensed_grams;
-                bool pid_computed = dispense_pid->Compute();
-
-                // Use PID output directly as servo angle
-                float servo_angle = (float)pid_output;
-
-                // Vibrator: only activate when <=30g remaining
-                float remaining = (float)target_grams - dispensed_grams;
-                if (remaining <= 30.0f) {
-                    vibrators[selected_scale]->setIntensity(0.6f);
-                } else {
-                    vibrators[selected_scale]->off();
-                }
-
-                servos[selected_scale]->writeDegrees(servo_angle);
-
-                // Log a telemetry sample per actual PID computation (20 Hz)
-                if (pid_computed) {
-                    TelemetrySample ts;
-                    ts.t_ms      = to_ms_since_boot(get_absolute_time()) - dispense_start_ms;
-                    ts.setpoint  = (float)pid_setpoint;
-                    ts.dispensed = dispensed_grams;
-                    ts.weight    = current_grams;
-                    ts.gross     = current_gross;
-                    ts.servo     = servo_angle;
-                    ts.p         = (float)dispense_pid->GetLastP();
-                    ts.i         = (float)dispense_pid->GetLastI();
-                    ts.d         = (float)dispense_pid->GetLastD();
-                    ts.vib       = (remaining <= 30.0f) ? 0.6f : 0.0f;
-                    telem_append(ts);
-                }
-
-                // Sync web state
-                net_lock();
-                g_state.dispensed_grams = dispensed_grams;
-                g_state.servo_angle = servo_angle;
-                g_state.vib_intensity = (remaining <= 30.0f) ? 0.6f : 0.0f;
-                net_unlock();
-
-                // Update display
-                char line[21];
-                std::snprintf(line, sizeof(line), "Target: %d g    ", target_grams);
-                lcd.setCursor(1, 0);
-                lcd.print(line);
-                std::snprintf(line, sizeof(line), "Dispensing: %d g", display_dispensed);
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-
-                // 7-segment shows dispensed amount with color
-                sevenSeg->clear();
-                if (dispensed_grams < target_grams - 5) {
-                    sevenSeg->printNumber(display_dispensed, 0, 0, 255);  // blue - still dispensing
-                } else if (dispensed_grams > target_grams + 5) {
-                    sevenSeg->printNumber(display_dispensed, 255, 0, 0);  // red - overshoot!
-                } else {
-                    sevenSeg->printNumber(display_dispensed, 0, 255, 0);  // green - on target
-                }
-                sevenSeg->show();
-
-                // Check if done (dispensed enough)
-                if (dispensed_grams >= (float)target_grams) {
-                    // Done!
-                    final_dispensed = dispensed_grams;  // Remember final amount
-                    servos[selected_scale]->writeDegrees(0.0f);  // Close servo
-                    vibrators[selected_scale]->off();
-                    dispense_pid->SetMode(MANUAL);
-                    telem_end_run(final_dispensed);
-                    disp_state = DispenseState::Done;
-                    disp_option = 0;
-                    last_disp_option = -1;
-                    net_lock();
-                    g_state.dispensing = false;
-                    g_state.dispense_done = true;
-                    g_state.dispensed_grams = final_dispensed;
-                    g_state.servo_angle = 0.0f;
-                    g_state.vib_intensity = 0.0f;
-                    net_unlock();
-                    bz.playCloseEncounters();  // Dispense complete! (also gives servo time to close)
-                    servos[selected_scale]->off();  // Release servo (no holding torque)
-                }
-
-                // Manual stop (encoder press or web STOP)
-                if ((pressed && !was_pressed_disp) || web_stop_dispense) {
-                    web_stop_dispense = false;
-                    servos[selected_scale]->writeDegrees(0.0f);  // Close servo
-                    vibrators[selected_scale]->off();
-                    dispense_pid->SetMode(MANUAL);
-                    telem_end_run(dispensed_grams);
-                    net_lock();
-                    g_state.servo_angle = 0.0f;
-                    g_state.vib_intensity = 0.0f;
-                    g_state.dispensing = false;
-                    net_unlock();
-                    sleep_ms(300);  // Give servo time to close
-                    servos[selected_scale]->off();  // Release servo
-                    disp_state = DispenseState::Idle;
-                    disp_option = 1;
-                    last_disp_option = -1;
-                }
-                break;
-            }
-
-            case DispenseState::Done:
-            {
-                // Options: [Back] [Retry]
-                if (delta != 0) {
-                    disp_option += delta;
-                    if (disp_option < 0) disp_option = 0;
-                    if (disp_option > 1) disp_option = 1;
-                    last_encoder_pos_disp = pos;
-                }
-
-                if (disp_option != last_disp_option) {
-                    char opt_line[21];
-                    std::snprintf(opt_line, sizeof(opt_line), "  %s%s%s   %s%s%s  ",
-                        disp_option == 0 ? "[" : " ", "Back", disp_option == 0 ? "]" : " ",
-                        disp_option == 1 ? "[" : " ", "Retry", disp_option == 1 ? "]" : " ");
-                    lcd.setCursor(3, 0);
-                    lcd.print(opt_line);
-                    last_disp_option = disp_option;
-                }
-
-                // Keep reading scale to show LIVE weight (may have overshot after closing)
-                float live_dispensed = start_weight - scales[selected_scale]->read_weight();
-                int display_live = (int)(live_dispensed + 0.5f);
-                if (display_live < 0) display_live = 0;
-
-                // Show result with live scale reading
-                char line[21];
-                std::snprintf(line, sizeof(line), "Target: %d g    ", target_grams);
-                lcd.setCursor(1, 0);
-                lcd.print(line);
-                std::snprintf(line, sizeof(line), "Dispensed: %d g ", display_live);
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-
-                // Color on 7-segment based on accuracy
-                sevenSeg->clear();
-                if (live_dispensed > target_grams + 5) {
-                    sevenSeg->printNumber(display_live, 255, 0, 0);  // red - overshoot
-                } else {
-                    sevenSeg->printNumber(display_live, 0, 255, 0);  // green - good
-                }
-                sevenSeg->show();
-
-                // A web START while sitting on the Done screen: drop back to Idle,
-                // which consumes web_start_dispense on the next iteration.
-                if (web_start_dispense) {
-                    disp_state = DispenseState::Idle;
-                    disp_option = 1;
-                    last_disp_option = -1;
-                }
-
-                if (pressed && !was_pressed_disp) {
-                    if (disp_option == 0) {
-                        // Back - return to menu
-                        first_entry_disp = true;
-                        current = ScreenId::Menu;
-                    } else {
-                        // Retry - tare and restart
-                        scales[selected_scale]->tare();
-                        bz.playMarioCoin();  // Bling!
-                        disp_state = DispenseState::Idle;
-                        disp_option = 1;
-                        last_disp_option = -1;
-                    }
-                }
-                break;
-            }
-            }
-
-            was_pressed_disp = pressed;
-            sleep_ms(20);
-            break;
-        }
-
-        case ScreenId::TestMenu:
-        {
-            // Test submenu: Vibrators, Servos, Back
-            int pos = enc.getPosition();
-            int selected = ((pos % 3) + 3) % 3;
-
-            if (selected != last_selected)
-            {
-                indicatorArrow(selected, 1, 3);
-                last_selected = selected;
-            }
-
-            if (enc.isPressed())
-            {
-                if (selected == 0) {
-                    current = ScreenId::TestVibrator;
-                } else if (selected == 1) {
-                    current = ScreenId::TestServo;
-                } else {
-                    current = ScreenId::Menu;
-                }
-            }
-            break;
-        }
-
-        case ScreenId::TestVibrator:
-        {
-            // Vibrator test screen - select vibrator and control intensity with encoder
-            static int test_vib_selected = 0;  // 0, 1, 2 = vibrator index
-            static int test_vib_intensity = 0;  // 0-100%
-            static int last_encoder_pos_test = 0;
-            static bool first_entry_test = true;
-            static bool was_pressed_test = false;
-            static bool adjusting_intensity = false;
-
-            if (first_entry_test) {
-                last_encoder_pos_test = enc.getPosition();
-                first_entry_test = false;
-                was_pressed_test = enc.isPressed();  // Capture current state to ignore carry-over press
-                test_vib_selected = 0;
-                test_vib_intensity = 0;
-                adjusting_intensity = false;
-                // Turn off all vibrators
-                for (int i = 0; i < 3; i++) {
-                    vibrators[i]->off();
-                }
-            }
-
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_test;
-            bool pressed = enc.isPressed();
-
-            if (adjusting_intensity) {
-                // Encoder changes intensity
-                if (delta != 0) {
-                    test_vib_intensity += delta * 5;  // 5% steps
-                    if (test_vib_intensity < 0) test_vib_intensity = 0;
-                    if (test_vib_intensity > 100) test_vib_intensity = 100;
-                    last_encoder_pos_test = pos;
-                    // Apply intensity to selected vibrator
-                    vibrators[test_vib_selected]->setIntensity((float)test_vib_intensity / 100.0f);
-                }
-
-                // Button exits intensity mode
-                if (pressed && !was_pressed_test) {
-                    adjusting_intensity = false;
-                    // Turn off vibrator when exiting
-                    vibrators[test_vib_selected]->off();
-                    test_vib_intensity = 0;
-                }
-            } else {
-                // Encoder selects vibrator (0, 1, 2) or Back (3)
-                if (delta != 0) {
-                    test_vib_selected += delta;
-                    if (test_vib_selected < 0) test_vib_selected = 0;
-                    if (test_vib_selected > 3) test_vib_selected = 3;
-                    last_encoder_pos_test = pos;
-                }
-
-                // Button enters intensity mode or goes back
-                if (pressed && !was_pressed_test) {
-                    if (test_vib_selected < 3) {
-                        adjusting_intensity = true;
-                        test_vib_intensity = 0;
-                    } else {
-                        // Back to menu
-                        first_entry_test = true;
-                        current = ScreenId::Menu;
-                    }
-                }
-            }
-            was_pressed_test = pressed;
-
-            // Update display
-            char line[21];
-            if (adjusting_intensity) {
-                std::snprintf(line, sizeof(line), "Vibrator %d: %3d%%   ", test_vib_selected + 1, test_vib_intensity);
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-                lcd.setCursor(3, 0);
-                lcd.print("  Turn to adjust    ");
-            } else {
-                // Show selection
-                std::snprintf(line, sizeof(line), "%s1%s %s2%s %s3%s %sBack%s",
-                    test_vib_selected == 0 ? "[" : " ", test_vib_selected == 0 ? "]" : " ",
-                    test_vib_selected == 1 ? "[" : " ", test_vib_selected == 1 ? "]" : " ",
-                    test_vib_selected == 2 ? "[" : " ", test_vib_selected == 2 ? "]" : " ",
-                    test_vib_selected == 3 ? "[" : " ", test_vib_selected == 3 ? "]" : " ");
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-                lcd.setCursor(3, 0);
-                lcd.print("Press to test       ");
-            }
-
-            // Show intensity on 7-segment
-            sevenSeg->clear();
-            if (adjusting_intensity) {
-                // Show intensity in color (blue->green->red)
-                uint8_t r = test_vib_intensity > 50 ? (test_vib_intensity - 50) * 5 : 0;
-                uint8_t g = test_vib_intensity < 50 ? test_vib_intensity * 5 : (100 - test_vib_intensity) * 5;
-                uint8_t b = test_vib_intensity < 50 ? (50 - test_vib_intensity) * 5 : 0;
-                sevenSeg->printNumber(test_vib_intensity, r, g, b);
-            } else {
-                sevenSeg->printNumber(test_vib_selected + 1, 0, 255, 0);
-            }
-            sevenSeg->show();
-
-            sleep_ms(50);
-            break;
-        }
-
-        case ScreenId::TestServo:
-        {
-            // Servo test screen - select servo and control angle with encoder
-            static int test_servo_selected = 0;  // 0, 1, 2 = servo index
-            static int test_servo_angle = 0;     // 0-180 degrees (0 = closed)
-            static int last_encoder_pos_servo = 0;
-            static bool first_entry_servo = true;
-            static bool was_pressed_servo = false;
-            static bool adjusting_angle = false;
-
-            if (first_entry_servo) {
-                last_encoder_pos_servo = enc.getPosition();
-                first_entry_servo = false;
-                was_pressed_servo = enc.isPressed();  // Capture current state to ignore carry-over press
-                test_servo_selected = 0;
-                test_servo_angle = 0;  // Start at closed position
-                adjusting_angle = false;
-                // Close all servos
-                for (int i = 0; i < 3; i++) {
-                    servos[i]->writeDegrees(0.0f);
-                }
-            }
-
-            int pos = enc.getPosition();
-            int delta = pos - last_encoder_pos_servo;
-            bool pressed = enc.isPressed();
-
-            if (adjusting_angle) {
-                // Encoder changes angle
-                if (delta != 0) {
-                    test_servo_angle += delta * 5;  // 5 degree steps
-                    if (test_servo_angle < 0) test_servo_angle = 0;
-                    if (test_servo_angle > 180) test_servo_angle = 180;
-                    last_encoder_pos_servo = pos;
-                    // Apply angle to selected servo
-                    servos[test_servo_selected]->writeDegrees((float)test_servo_angle);
-                }
-
-                // Button exits angle mode
-                if (pressed && !was_pressed_servo) {
-                    adjusting_angle = false;
-                    // Close servo when exiting
-                    servos[test_servo_selected]->writeDegrees(0.0f);
-                    test_servo_angle = 0;
-                }
-            } else {
-                // Encoder selects servo (0, 1, 2) or Back (3)
-                if (delta != 0) {
-                    test_servo_selected += delta;
-                    if (test_servo_selected < 0) test_servo_selected = 0;
-                    if (test_servo_selected > 3) test_servo_selected = 3;
-                    last_encoder_pos_servo = pos;
-                }
-
-                // Button enters angle mode or goes back
-                if (pressed && !was_pressed_servo) {
-                    if (test_servo_selected < 3) {
-                        adjusting_angle = true;
-                        test_servo_angle = 0;  // Start at closed
-                        servos[test_servo_selected]->writeDegrees(0.0f);
-                    } else {
-                        // Back to test menu
-                        first_entry_servo = true;
-                        current = ScreenId::TestMenu;
-                    }
-                }
-            }
-            was_pressed_servo = pressed;
-
-            // Update display
-            char line[21];
-            if (adjusting_angle) {
-                std::snprintf(line, sizeof(line), "Servo %d: %3d deg   ", test_servo_selected + 1, test_servo_angle);
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-                lcd.setCursor(3, 0);
-                lcd.print("  Turn to adjust    ");
-            } else {
-                // Show selection
-                std::snprintf(line, sizeof(line), "%s1%s %s2%s %s3%s %sBack%s",
-                    test_servo_selected == 0 ? "[" : " ", test_servo_selected == 0 ? "]" : " ",
-                    test_servo_selected == 1 ? "[" : " ", test_servo_selected == 1 ? "]" : " ",
-                    test_servo_selected == 2 ? "[" : " ", test_servo_selected == 2 ? "]" : " ",
-                    test_servo_selected == 3 ? "[" : " ", test_servo_selected == 3 ? "]" : " ");
-                lcd.setCursor(2, 0);
-                lcd.print(line);
-                lcd.setCursor(3, 0);
-                lcd.print("Press to test       ");
-            }
-
-            // Show angle on 7-segment
-            sevenSeg->clear();
-            if (adjusting_angle) {
-                // Color based on position: red at 0, green at 90, blue at 180
-                uint8_t r = test_servo_angle < 90 ? (90 - test_servo_angle) * 2 : 0;
-                uint8_t g = 255 - abs(test_servo_angle - 90) * 2;
-                uint8_t b = test_servo_angle > 90 ? (test_servo_angle - 90) * 2 : 0;
-                sevenSeg->printNumber(test_servo_angle, r, g, b);
-            } else {
-                sevenSeg->printNumber(test_servo_selected + 1, 0, 255, 0);
-            }
-            sevenSeg->show();
-
-            sleep_ms(50);
-            break;
-        }
-        }
+        // Run the current screen (see app/screens.cpp)
+        mgr.tick(ctx);
     }
 }
