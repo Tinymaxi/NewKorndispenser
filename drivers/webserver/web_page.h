@@ -79,6 +79,7 @@ canvas{width:100%;height:180px;display:block;margin-top:4px}
  letter-spacing:.08em;border:1px solid var(--hair);background:var(--bg);
  color:var(--ink2);cursor:pointer;border-radius:0;-webkit-appearance:none}
 .tg.on{border-color:var(--ink);color:var(--ink)}
+.tg .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
 .runmeta{font-size:11px;color:var(--ink2);letter-spacing:.03em;margin-top:10px;
  font-variant-numeric:tabular-nums}
 .sliderrow{display:flex;align-items:center;gap:12px;margin:14px 0}
@@ -136,10 +137,10 @@ td.bad{color:var(--red)}
 <canvas id="graph" height="180"></canvas>
 <div class="toggles" id="pidToggles">
 <span class="lbl">Show</span>
-<button class="tg on" id="tgBAG" onclick="tgl('bag')">Bag</button>
-<button class="tg" id="tgP" onclick="tgl('p')">P</button>
-<button class="tg" id="tgI" onclick="tgl('i')">I</button>
-<button class="tg" id="tgD" onclick="tgl('d')">D</button>
+<button class="tg on" id="tgBAG" onclick="tgl('bag')"><span class="dot" style="background:#eda100"></span>Bag</button>
+<button class="tg" id="tgP" onclick="tgl('p')"><span class="dot" style="background:#eb6834"></span>P</button>
+<button class="tg" id="tgI" onclick="tgl('i')"><span class="dot" style="background:#4a3aa7"></span>I</button>
+<button class="tg" id="tgD" onclick="tgl('d')"><span class="dot" style="background:#008300"></span>D</button>
 </div>
 <div class="runmeta" id="runMeta"></div>
 <div class="row" id="dlRow" style="display:none">
@@ -166,7 +167,7 @@ td.bad{color:var(--red)}
 <input type="range" min="0" max="180" value="0" id="servoSlider" oninput="sendServo(this.value)">
 <span class="val num" id="servoVal">0&deg;</span></div>
 <div class="sliderrow"><span class="lbl">Vibrator</span>
-<input type="range" min="0" max="60" value="0" id="vibSlider" oninput="sendVib(this.value)">
+<input type="range" min="0" max="100" value="0" id="vibSlider" oninput="sendVib(this.value)">
 <span class="val num" id="vibVal">0%</span></div>
 <div class="row">
 <button class="btn" onclick="testStop()">Stop All</button>
@@ -201,6 +202,8 @@ td.bad{color:var(--red)}
 <script>
 const $=id=>document.getElementById(id);
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
+// Series colors - validated categorical set (dispensed stays ink, setpoint red)
+const CSRV='#2a78d6',CBAG='#eda100',CVIB='#1baf7a',CP='#eb6834',CI='#4a3aa7',CD='#008300';
 
 // --- Live graph state (750 ms poll samples) ---
 const G={buf:[],gross:[],servo:[],vib:[],max:60};
@@ -371,6 +374,21 @@ function cdims(){
  let r=graphCanvas.getBoundingClientRect();
  return [r.width,r.height];
 }
+function drawLegend(ctx,entries){
+ ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
+ ctx.textAlign='left';
+ // white backing so lines crossing the corner don't strike the text
+ ctx.fillStyle='rgba(255,255,255,.85)';
+ ctx.fillRect(0,15,92,entries.length*13+7);
+ let y=26;
+ for(let[c,t]of entries){
+  ctx.fillStyle=c;
+  ctx.beginPath();ctx.arc(7,y-3,3,0,7);ctx.fill();
+  ctx.fillStyle=INK2;
+  ctx.fillText(t,14,y);
+  y+=13;
+ }
+}
 function axisLabel(ctx,txt,x,y,align){
  ctx.fillStyle=INK2;
  ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
@@ -407,30 +425,32 @@ function drawLive(target){
   let span=Math.max(bMax-bMin,50),mid=(bMax+bMin)/2;
   bMin=mid-span/2;bMax=mid+span/2;
   let toYB=v=>h*0.92-(v-bMin)/(bMax-bMin)*h*0.84;
-  ctx.strokeStyle='#bbb';ctx.lineWidth=1;ctx.beginPath();
+  ctx.strokeStyle=CBAG;ctx.lineWidth=1;ctx.beginPath();
   for(let i=0;i<G.gross.length;i++){
    let x=toX(s0+i),y=toYB(G.gross[i]);
    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
   }
   ctx.stroke();
   let bl=G.gross[G.gross.length-1];
-  ctx.fillStyle='#bbb';
+  ctx.fillStyle=CBAG;
   ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
   ctx.textAlign='right';
-  ctx.fillText('BAG '+bl.toFixed(0)+' G',w-4,toYB(bl)-4);
+  // clamp away from the LIVE label (top) and time axis (bottom)
+  let by=Math.min(Math.max(toYB(bl)-4,26),h-18);
+  ctx.fillText('BAG '+bl.toFixed(0)+' G',w-4,by);
  }
- // servo: 1px gray
+ // servo: 1px blue
  if(G.servo.length>=2){
-  ctx.strokeStyle=INK2;ctx.lineWidth=1;ctx.beginPath();
+  ctx.strokeStyle=CSRV;ctx.lineWidth=1;ctx.beginPath();
   for(let i=0;i<G.servo.length;i++){
    let x=toX(s0+i),y=toYR(G.servo[i]);
    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
   }
   ctx.stroke();
  }
- // vib: 1px light gray (0-100 mapped onto right axis)
+ // vib: 1px aqua (0-100 mapped onto right axis)
  if(G.vib.length>=2){
-  ctx.strokeStyle=HAIR;ctx.lineWidth=1;ctx.beginPath();
+  ctx.strokeStyle=CVIB;ctx.lineWidth=1;ctx.beginPath();
   for(let i=0;i<G.vib.length;i++){
    let x=toX(s0+i),y=toYR(G.vib[i]*1.8);
    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
@@ -449,6 +469,9 @@ function drawLive(target){
  axisLabel(ctx,maxY.toFixed(0)+' G',4,12,'left');
  axisLabel(ctx,minY.toFixed(0)+' G',4,h-4,'left');
  axisLabel(ctx,'LIVE',w-4,12,'right');
+ let lg=[[INK,'WEIGHT'],[CSRV,'SERVO'],[CVIB,'VIB'],[RED,'TARGET']];
+ if(show.bag)lg.splice(3,0,[CBAG,'BAG']);
+ drawLegend(ctx,lg);
 }
 
 // --- Post-run chart (full 20 Hz data) ---
@@ -496,26 +519,34 @@ function drawRun(){
   let span=Math.max(bMax-bMin,50),mid=(bMax+bMin)/2;
   bMin=mid-span/2;bMax=mid+span/2;
   let toYB=v=>h*0.92-(v-bMin)/(bMax-bMin)*h*0.84;
-  line(R.t,R.gross,'#bbb',1,null,toYB);
-  ctx.fillStyle='#bbb';
+  line(R.t,R.gross,CBAG,1,null,toYB);
+  ctx.fillStyle=CBAG;
   ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
-  ctx.textAlign='left';
-  ctx.fillText('BAG '+R.gross[0].toFixed(0)+'→'+R.gross[n-1].toFixed(0)+' G',4,toYB(R.gross[0])-4);
+  ctx.textAlign='right';
+  // label at the line's end, clamped away from RUN label and time axis
+  let by=Math.min(Math.max(toYB(R.gross[n-1])-4,26),h-18);
+  ctx.fillText('BAG '+R.gross[0].toFixed(0)+'→'+R.gross[n-1].toFixed(0)+' G',w-4,by);
  }
- // vib: light-gray steps (0-1 -> right axis 0-100 zone)
- line(R.t,R.vib.map(v=>rMin+v*100),HAIR,1,null,toYR);
- // PID terms (gray, distinguishable dashes)
- if(show.p)line(R.t,R.p,INK2,1,[2,2],toYR);
- if(show.i)line(R.t,R.i,INK2,1,[6,3],toYR);
- if(show.d)line(R.t,R.d,'#aaa',1,[1,3],toYR);
- // servo: 1px gray solid
- line(R.t,R.servo,INK2,1,null,toYR);
+ // vib: aqua steps (0-1 -> right axis 0-100 zone)
+ line(R.t,R.vib.map(v=>rMin+v*100),CVIB,1,null,toYR);
+ // PID terms (color + dash pattern: identity survives CVD/print)
+ if(show.p)line(R.t,R.p,CP,1,[2,2],toYR);
+ if(show.i)line(R.t,R.i,CI,1,[6,3],toYR);
+ if(show.d)line(R.t,R.d,CD,1,[1,3],toYR);
+ // servo: 1px blue solid
+ line(R.t,R.servo,CSRV,1,null,toYR);
  // dispensed: 1.5px ink (the star of the show)
  line(R.t,R.disp,INK,1.5,null,toY);
  axisLabel(ctx,maxY.toFixed(0)+' G',4,12,'left');
  axisLabel(ctx,'0',4,h-4,'left');
  axisLabel(ctx,(tMax/1000).toFixed(1)+' S',w-4,h-4,'right');
  axisLabel(ctx,'RUN '+R.meta.run_id,w-4,12,'right');
+ let lg=[[INK,'DISPENSED'],[CSRV,'SERVO'],[CVIB,'VIB'],[RED,'TARGET']];
+ if(show.bag)lg.splice(3,0,[CBAG,'BAG']);
+ if(show.p)lg.push([CP,'P']);
+ if(show.i)lg.push([CI,'I']);
+ if(show.d)lg.push([CD,'D']);
+ drawLegend(ctx,lg);
 }
 
 // --- CSV run loading ---
