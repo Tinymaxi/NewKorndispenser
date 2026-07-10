@@ -20,7 +20,15 @@ public:
     //
     //  MODE
     //
+    //  read_weight(1) is non-blocking after the first call: it drains the PIO RX
+    //  FIFO and uses the NEWEST queued sample (the HX711 free-runs at ~10 SPS and
+    //  the 4-deep FIFO otherwise serves ~1 s old readings). samples>1 discards the
+    //  backlog, then blocks for that many fresh conversions.
     float  read_weight(int samples = 1);
+    //  Gross (absolute) weight from the same sample read_weight last used, computed
+    //  against the CALIBRATED zero - unaffected by tare(). E.g. the corn bag's true
+    //  weight while dispense logic works tare-relative.
+    float  last_gross() const;
     void  set_trimmed_mavg_params(uint8_t window, uint8_t trim_each_side);
     float read_weight_trimmed_mavg();
 
@@ -40,6 +48,11 @@ public:
     float   get_scale() const;
     void    set_offset(int32_t offset);
     int32_t get_offset() const;
+
+    //  Calibrated zero point (raw counts with the scale empty). Persisted in flash
+    //  and, unlike offset_, NEVER overwritten by tare() - the basis for last_gross().
+    void    set_cal_offset(int32_t offset);
+    int32_t get_cal_offset() const;
 
     //  clear the scale
     //  call tare() to set the zero offset
@@ -63,10 +76,16 @@ private:
     static inline bool programLoaded = false;
     static inline uint programOffset = 0;
 
+    // Drain the RX FIFO keeping only the newest queued sample; true if any was queued
+    bool drain_fifo(int32_t& newest);
+
     uint    clockPin_;
     uint    dataPin_;
     float   scale_cpg_ { 1.0f }; // counts per gram
-    int32_t offset_    { 0 };
+    int32_t offset_    { 0 };    // tare zero (runtime, clobbered by tare())
+    int32_t cal_offset_{ 0 };    // calibrated zero (from flash, survives tare)
+    int32_t last_raw_  { 0 };    // newest raw sample seen by read_weight
+    bool    has_last_  { false };
 
     // --- Trimmed moving average state ---
     static constexpr uint8_t TMA_MAX_WINDOW = 16; // supports up to 16 samples

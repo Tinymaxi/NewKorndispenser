@@ -301,6 +301,7 @@ target_link_libraries(NewKorndispenser
     webserver
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_mdns
 )
 
 pico_enable_stdio_usb(NewKorndispenser 1)

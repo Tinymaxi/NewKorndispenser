@@ -120,8 +120,9 @@ td.bad{color:var(--red)}
 <section>
 <h2>Run Chart</h2>
 <canvas id="graph" height="180"></canvas>
-<div class="toggles" id="pidToggles" style="display:none">
-<span class="lbl">Terms</span>
+<div class="toggles" id="pidToggles">
+<span class="lbl">Show</span>
+<button class="tg on" id="tgBAG" onclick="tgl('bag')">Bag</button>
 <button class="tg" id="tgP" onclick="tgl('p')">P</button>
 <button class="tg" id="tgI" onclick="tgl('i')">I</button>
 <button class="tg" id="tgD" onclick="tgl('d')">D</button>
@@ -188,14 +189,19 @@ const $=id=>document.getElementById(id);
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 
 // --- Live graph state (750 ms poll samples) ---
-const G={buf:[],servo:[],vib:[],max:60};
+const G={buf:[],gross:[],servo:[],vib:[],max:60};
 let graphCanvas,graphCtx;
+let lastTgt=100;
 
-// --- Post-run data (full 20 Hz from /api/log.csv) ---
-let R=null;                 // {t,sp,disp,w,servo,p,i,d,vib,meta}
+// --- Post-run data (full 10 Hz from /api/log.csv) ---
+let R=null;                 // {t,sp,disp,w,gross,servo,p,i,d,vib,meta}
 let lastRunLoaded=0;
 let loadingRun=false;
-const show={p:false,i:false,d:false};
+const show={bag:true,p:false,i:false,d:false};
+
+// --- Scale-select latch: keep the tapped scale highlighted until the server
+// confirms it (or 4 s pass), so polls with the stale value can't flicker it back
+let pendingScale=-1,pendingUntil=0;
 
 // --- History ---
 let history=JSON.parse(localStorage.getItem('kd_history')||'[]');
@@ -212,6 +218,7 @@ function api(method,url,body){
 }
 
 function selScale(i){
+ pendingScale=i;pendingUntil=Date.now()+4000;
  for(let j=0;j<3;j++){let el=$('sc'+j);if(el)el.classList.toggle('active',j===i);}
  $('statusText').textContent='SWITCHING TO SCALE '+(i+1)+'…';
  api('POST','/api/select-scale',{scale:i});
@@ -256,7 +263,7 @@ function applyPID(){
 function tgl(k){
  show[k]=!show[k];
  $('tg'+k.toUpperCase()).classList.toggle('on',show[k]);
- if(R)drawRun();
+ if(R&&!prevDisp)drawRun();else drawLive(lastTgt);
 }
 
 // --- Scale dashboard ---
@@ -279,9 +286,14 @@ function buildDash(d){
   }
   dashBuilt=true;
  }
+ // Latch: trust the tapped scale until the server confirms it or 4 s pass
+ if(pendingScale>=0&&(d.selected_scale===pendingScale||Date.now()>pendingUntil))
+  pendingScale=-1;
+ let act=pendingScale>=0?pendingScale:d.selected_scale;
  for(let i=0;i<3;i++){
-  $('sc'+i).classList.toggle('active',i===d.selected_scale);
-  $('scw'+i).textContent=d.weights[i].toFixed(0)+' g';
+  $('sc'+i).classList.toggle('active',i===act);
+  let g=d.gross?d.gross[i]:d.weights[i];   // cards show the bag's absolute weight
+  $('scw'+i).textContent=g.toFixed(0)+' g';
   let ce=$('scc'+i),cal=d.scale_calibrated[i];
   ce.textContent=cal?'CAL':'NOT CAL';
   ce.className='sc'+(cal?'':' no');
@@ -330,6 +342,26 @@ function drawLive(target){
  ctx.strokeStyle=RED;ctx.lineWidth=1;ctx.setLineDash([5,4]);
  ctx.beginPath();let ty=toY(target);ctx.moveTo(0,ty);ctx.lineTo(w,ty);ctx.stroke();
  ctx.setLineDash([]);
+ // bag (absolute) weight: own normalized band so a heavy bag doesn't squash
+ // the dispensed curve; min 50 g span so idle noise stays flat
+ if(show.bag&&G.gross.length>=2){
+  let bMin=Infinity,bMax=-Infinity;
+  for(let v of G.gross){if(v<bMin)bMin=v;if(v>bMax)bMax=v;}
+  let span=Math.max(bMax-bMin,50),mid=(bMax+bMin)/2;
+  bMin=mid-span/2;bMax=mid+span/2;
+  let toYB=v=>h*0.92-(v-bMin)/(bMax-bMin)*h*0.84;
+  ctx.strokeStyle='#bbb';ctx.lineWidth=1;ctx.beginPath();
+  for(let i=0;i<G.gross.length;i++){
+   let x=toX(s0+i),y=toYB(G.gross[i]);
+   i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+  let bl=G.gross[G.gross.length-1];
+  ctx.fillStyle='#bbb';
+  ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
+  ctx.textAlign='right';
+  ctx.fillText('BAG '+bl.toFixed(0)+' G',w-4,toYB(bl)-4);
+ }
  // servo: 1px gray
  if(G.servo.length>=2){
   ctx.strokeStyle=INK2;ctx.lineWidth=1;ctx.beginPath();
@@ -370,7 +402,7 @@ function drawRun(){
  let n=R.t.length;
  if(n<2)return;
  let tMax=R.t[n-1]||1;
- // Left axis: grams
+ // Left axis: grams (dispensed scale; the bag trace has its own band below)
  let minY=0,maxY=R.meta.target||1;
  for(let v of R.disp){if(v>maxY)maxY=v;}
  maxY*=1.1;
@@ -383,7 +415,8 @@ function drawRun(){
  for(let arr of seriesR)for(let v of arr){if(v<rMin)rMin=v;if(v>rMax)rMax=v;}
  let rR=rMax-rMin||1;
  let toX=t=>(t/tMax)*w;
- let toY=v=>h-(v/maxY)*h;
+ let yR0=maxY-minY||1;
+ let toY=v=>h-(v-minY)/yR0*h;
  let toYR=v=>h-(v-rMin)/rR*h;
  function line(xs,ys,style,width,dash,mapper){
   ctx.strokeStyle=style;ctx.lineWidth=width;ctx.setLineDash(dash||[]);
@@ -398,6 +431,20 @@ function drawRun(){
  ctx.strokeStyle=RED;ctx.lineWidth=1;ctx.setLineDash([5,4]);
  ctx.beginPath();let sy=toY(R.meta.target);ctx.moveTo(0,sy);ctx.lineTo(w,sy);ctx.stroke();
  ctx.setLineDash([]);
+ // bag (absolute) weight: own normalized band (heavy bag must not squash the
+ // dispensed curve); min 50 g span
+ if(show.bag&&R.gross&&R.gross.length===n){
+  let bMin=Infinity,bMax=-Infinity;
+  for(let v of R.gross){if(v<bMin)bMin=v;if(v>bMax)bMax=v;}
+  let span=Math.max(bMax-bMin,50),mid=(bMax+bMin)/2;
+  bMin=mid-span/2;bMax=mid+span/2;
+  let toYB=v=>h*0.92-(v-bMin)/(bMax-bMin)*h*0.84;
+  line(R.t,R.gross,'#bbb',1,null,toYB);
+  ctx.fillStyle='#bbb';
+  ctx.font='10px "Helvetica Neue",Helvetica,sans-serif';
+  ctx.textAlign='left';
+  ctx.fillText('BAG '+R.gross[0].toFixed(0)+'→'+R.gross[n-1].toFixed(0)+' G',4,toYB(R.gross[0])-4);
+ }
  // vib: light-gray steps (0-1 -> right axis 0-100 zone)
  line(R.t,R.vib.map(v=>rMin+v*100),HAIR,1,null,toYR);
  // PID terms (gray, distinguishable dashes)
@@ -424,7 +471,7 @@ function loadRun(id){
  }).then(txt=>{
   let lines=txt.split('\n');
   let meta={};
-  let data={t:[],sp:[],disp:[],w:[],servo:[],p:[],i:[],d:[],vib:[]};
+  let data={t:[],sp:[],disp:[],w:[],gross:[],servo:[],p:[],i:[],d:[],vib:[]};
   for(let ln of lines){
    if(!ln)continue;
    if(ln[0]==='#'){
@@ -436,10 +483,10 @@ function loadRun(id){
    }
    if(ln[0]==='t')continue; // header row
    let c=ln.split(',');
-   if(c.length<9)continue;
+   if(c.length<10)continue;
    data.t.push(+c[0]);data.sp.push(+c[1]);data.disp.push(+c[2]);
-   data.w.push(+c[3]);data.servo.push(+c[4]);data.p.push(+c[5]);
-   data.i.push(+c[6]);data.d.push(+c[7]);data.vib.push(+c[8]);
+   data.w.push(+c[3]);data.gross.push(+c[4]);data.servo.push(+c[5]);
+   data.p.push(+c[6]);data.i.push(+c[7]);data.d.push(+c[8]);data.vib.push(+c[9]);
   }
   // Validate against metadata (stream may truncate if a new run started)
   if(meta.samples&&data.t.length<meta.samples)throw 0;
@@ -448,7 +495,6 @@ function loadRun(id){
    kp:meta.kp,ki:meta.ki,kd:meta.kd,final:meta.final_g,samples:data.t.length};
   lastRunLoaded=id;
   loadingRun=false;
-  $('pidToggles').style.display='flex';
   $('dlRow').style.display='flex';
   $('runMeta').textContent='RUN '+R.meta.run_id+' · SCALE '+R.meta.scale+
    ' · '+R.meta.samples+' SAMPLES · KP '+R.meta.kp+' KI '+R.meta.ki+
@@ -519,14 +565,18 @@ function poll(){
   }
   $('statusText').innerHTML='<span class="on">SCALE '+(d.selected_scale+1)+'</span> · '+st+
    (cal?'':' · <span class="ap">NOT CALIBRATED</span>')+' · '+net;
-  $('dispStatus').textContent=d.dispensing?
-   disp.toFixed(1)+' of '+tgt+' g':'Target '+tgt+' g';
+  let bag=d.gross?d.gross[d.selected_scale]:0;
+  $('dispStatus').textContent=(d.dispensing?
+   disp.toFixed(1)+' of '+tgt+' g':'Target '+tgt+' g')+' · Bag '+bag.toFixed(0)+' g';
 
   buildDash(d);
 
   // Live graph while dispensing (or before any run is loaded)
+  lastTgt=tgt;
   G.buf.push(displayW);
   if(G.buf.length>G.max)G.buf.shift();
+  G.gross.push(bag);
+  if(G.gross.length>G.max)G.gross.shift();
   G.servo.push(d.servo||0);
   if(G.servo.length>G.max)G.servo.shift();
   G.vib.push((d.vib||0)*100);

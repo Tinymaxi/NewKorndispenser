@@ -20,6 +20,7 @@
 #include "dispenser_state.h"
 #include "web_server.h"
 #include "dhserver.h"
+#include "lwip/apps/mdns.h"
 
 constexpr uint BUZZER_PIN = 2;
 constexpr uint SEVENSEG_PIN = 28;
@@ -99,6 +100,19 @@ static dhcp_config_t dhcp_cfg = {
     sizeof(dhcp_entries) / sizeof(dhcp_entries[0]),
     dhcp_entries
 };
+
+// Announce this device as http://korn.local via mDNS/Bonjour so a printed QR
+// code works regardless of the DHCP-assigned IP. netif_default is the active
+// interface in both STA and AP mode. Call after the IP is up.
+static void start_mdns() {
+    cyw43_arch_lwip_begin();
+    mdns_resp_init();
+    mdns_resp_add_netif(netif_default, "korn");
+    mdns_resp_add_service(netif_default, "korn", "_http", DNSSD_PROTO_TCP, 80, NULL, NULL);
+    mdns_resp_announce(netif_default);
+    cyw43_arch_lwip_end();
+    printf("[mdns] korn.local up\n");
+}
 
 static bool start_ap_mode() {
     cyw43_arch_disable_sta_mode();
@@ -196,12 +210,15 @@ int main()
             printf("[wifi] connected: %s\n", ip_str);
 
             lcd.setCursor(2, 0);
-            lcd.print("IP:");
+            char ip_line[21];
+            std::snprintf(ip_line, sizeof(ip_line), "IP: %s", ip_str);
+            lcd.print(ip_line);
             lcd.setCursor(3, 0);
-            lcd.print(ip_str);
+            lcd.print("http://korn.local");
 
-            // Start web server
+            // Start web server + mDNS (korn.local)
             web_server_init(&g_state, WEB_SERVER_PORT);
+            start_mdns();
             sleep_ms(2000);
         } else {
             // STA failed (or AP forced) - broadcast our own network instead
@@ -220,6 +237,7 @@ int main()
                 lcd.print("http://192.168.4.1");
 
                 web_server_init(&g_state, WEB_SERVER_PORT);
+                start_mdns();   // korn.local works in AP mode too
                 sleep_ms(4000);
             } else {
                 lcd.setCursor(3, 0);
@@ -377,11 +395,14 @@ int main()
         // taken in the lwIP IRQ context can't tear across fields.
         bool have_weights = false;
         float w_sel = 0.0f, w_other = 0.0f;
+        float gr_sel = 0.0f, gr_other = 0.0f;
         int other = (selected_scale + 1 + bg_weight_cycle) % 3;
         if (absolute_time_diff_us(last_bg_weight_time, get_absolute_time()) > 250000) {
             w_sel = scales[selected_scale]->read_weight();
+            gr_sel = scales[selected_scale]->last_gross();   // same raw sample
             if (other != selected_scale) {
                 w_other = scales[other]->read_weight();
+                gr_other = scales[other]->last_gross();
             }
             have_weights = true;
             bg_weight_cycle = (bg_weight_cycle + 1) % 2;
@@ -393,7 +414,11 @@ int main()
         g_state.target_grams = target_grams;
         if (have_weights) {
             g_state.weights[selected_scale] = w_sel;
-            if (other != selected_scale) g_state.weights[other] = w_other;
+            g_state.gross[selected_scale] = gr_sel;
+            if (other != selected_scale) {
+                g_state.weights[other] = w_other;
+                g_state.gross[other] = gr_other;
+            }
         }
         g_state.pid_kp = (float)Kp;
         g_state.pid_ki = (float)Ki;
@@ -405,42 +430,46 @@ int main()
         net_unlock();
 
         // --- Web command dispatch ---
-        // Copy the command AND its payload fields atomically, then dispatch from
-        // the locals (a second web request could otherwise overwrite cmd_* mid-use).
-        WebCommand cmd;
-        int   cmd_target, cmd_scale, cmd_cal_weight;
-        float cmd_servo_angle, cmd_vib_intensity;
-        float cmd_pid_kp, cmd_pid_ki, cmd_pid_kd;
-        net_lock();
-        cmd = g_state.pending_command;
-        g_state.pending_command = WebCommand::None;
-        cmd_target        = g_state.cmd_target;
-        cmd_scale         = g_state.cmd_scale;
-        cmd_cal_weight    = g_state.cmd_cal_weight;
-        cmd_servo_angle   = g_state.cmd_servo_angle;
-        cmd_vib_intensity = g_state.cmd_vib_intensity;
-        cmd_pid_kp        = g_state.cmd_pid_kp;
-        cmd_pid_ki        = g_state.cmd_pid_ki;
-        cmd_pid_kd        = g_state.cmd_pid_kd;
-        net_unlock();
-        if (cmd != WebCommand::None) {
+        // Drain ALL queued commands in order (the queue means nothing gets lost
+        // while a blocking tare/calibrate stalls the loop). Pop under the lwIP
+        // lock, dispatch from the copy.
+        while (true) {
+            WebCmd c;
+            net_lock();
+            bool have = (g_state.cmd_tail != g_state.cmd_head);
+            if (have) {
+                c = g_state.cmd_queue[g_state.cmd_tail];
+                g_state.cmd_tail = (uint8_t)((g_state.cmd_tail + 1) % WEBCMD_QUEUE_LEN);
+            }
+            net_unlock();
+            if (!have) break;
+
             web_active = true;  // Web is in control, disable hardware input
 
-            switch (cmd) {
+            switch (c.cmd) {
             case WebCommand::Tare:
                 scales[selected_scale]->tare();
                 bz.playMarioCoin();
+                // Publish the tared reading immediately so the next status poll
+                // shows ~0 instead of the stale pre-tare weight
+                {
+                    float wnew = scales[selected_scale]->read_weight();
+                    net_lock();
+                    g_state.weights[selected_scale] = wnew;
+                    g_state.gross[selected_scale] = scales[selected_scale]->last_gross();
+                    net_unlock();
+                }
                 break;
 
             case WebCommand::SetTarget:
-                target_grams = cmd_target;
+                target_grams = c.i0;
                 if (target_grams < 1) target_grams = 1;
                 if (target_grams > 9999) target_grams = 9999;
                 break;
 
             case WebCommand::SelectScale:
-                if (cmd_scale >= 0 && cmd_scale <= 2) {
-                    selected_scale = cmd_scale;
+                if (c.i0 >= 0 && c.i0 <= 2) {
+                    selected_scale = c.i0;
                 }
                 break;
 
@@ -464,11 +493,11 @@ int main()
                 break;
 
             case WebCommand::TestServo:
-                servos[selected_scale]->writeDegrees(cmd_servo_angle);
+                servos[selected_scale]->writeDegrees(c.f0);
                 break;
 
             case WebCommand::TestVibrator:
-                vibrators[selected_scale]->setIntensity(cmd_vib_intensity);
+                vibrators[selected_scale]->setIntensity(c.f0);
                 break;
 
             case WebCommand::TestStop:
@@ -483,9 +512,9 @@ int main()
                 break;
 
             case WebCommand::SetPID:
-                Kp = (double)cmd_pid_kp;
-                Ki = (double)cmd_pid_ki;
-                Kd = (double)cmd_pid_kd;
+                Kp = (double)c.f0;
+                Ki = (double)c.f1;
+                Kd = (double)c.f2;
                 if (dispense_pid) {
                     dispense_pid->SetTunings(Kp, Ki, Kd);
                 }
@@ -498,9 +527,12 @@ int main()
                 break;
 
             case WebCommand::Calibrate:
-                if (cmd_cal_weight > 0) {
+                if (c.i0 > 0) {
                     scales[selected_scale]->calibrate_scale(
-                        (float)cmd_cal_weight, 10);
+                        (float)c.i0, 10);
+                    // The tare done before calibration IS the calibrated zero
+                    scales[selected_scale]->set_cal_offset(
+                        scales[selected_scale]->get_offset());
                     sc.entries[selected_scale].offset_counts =
                         scales[selected_scale]->get_offset();
                     sc.entries[selected_scale].count_per_g =
@@ -858,6 +890,8 @@ int main()
                         if (known_grams < 1) known_grams = 1;
 
                         scales[selected_scale]->calibrate_scale((float)known_grams, 10);
+                        // The tare done in step 1 IS the calibrated zero
+                        scales[selected_scale]->set_cal_offset(scales[selected_scale]->get_offset());
 
                         // Save to flash (entry index matches scale index)
                         sc.entries[selected_scale].offset_counts = scales[selected_scale]->get_offset();
@@ -1187,12 +1221,17 @@ int main()
                     dispense_pid = new PID(&pid_input, &pid_output, &pid_setpoint,
                                           Kp, Ki, Kd, DIRECT);
                     dispense_pid->SetOutputLimits(SERVO_MIN_OPEN, SERVO_OPEN);  // Output is servo angle in opening range only
-                    dispense_pid->SetSampleTime(50);
+                    // 100 ms matches the HX711's ~10 SPS so every PID compute
+                    // sees a genuinely new sample
+                    dispense_pid->SetSampleTime(100);
                 }
             }
 
             // Read current weight from scale (3-sample average for noise reduction)
-            float current_grams = scales[selected_scale]->read_weight(3);
+            // Freshest-available non-blocking read (a 3-sample read would block
+            // ~300 ms and throttle the PID loop to ~3 Hz)
+            float current_grams = scales[selected_scale]->read_weight();
+            float current_gross = scales[selected_scale]->last_gross();
             // Calculate how much has been dispensed (weight decrease = positive dispensed)
             float dispensed_grams = start_weight - current_grams;
             int display_dispensed = (int)(dispensed_grams + 0.5f);
@@ -1323,6 +1362,7 @@ int main()
                     ts.setpoint  = (float)pid_setpoint;
                     ts.dispensed = dispensed_grams;
                     ts.weight    = current_grams;
+                    ts.gross     = current_gross;
                     ts.servo     = servo_angle;
                     ts.p         = (float)dispense_pid->GetLastP();
                     ts.i         = (float)dispense_pid->GetLastI();
@@ -1422,7 +1462,7 @@ int main()
                 }
 
                 // Keep reading scale to show LIVE weight (may have overshot after closing)
-                float live_dispensed = start_weight - scales[selected_scale]->read_weight(3);
+                float live_dispensed = start_weight - scales[selected_scale]->read_weight();
                 int display_live = (int)(live_dispensed + 0.5f);
                 if (display_live < 0) display_live = 0;
 

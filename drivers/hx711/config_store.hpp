@@ -32,6 +32,7 @@ bool save_pid_config(const PidConfig& cfg);
 template <class HX711>
 inline void apply_scale_config(HX711& scale, const ScaleEntry& e) {
     scale.set_offset(e.offset_counts);
+    scale.set_cal_offset(e.offset_counts);   // calibrated zero for gross weight (survives tare)
     if (e.count_per_g != 0.0f) {
         // hx711::set_scale expects counts/gram internally
         scale.set_scale(e.count_per_g);

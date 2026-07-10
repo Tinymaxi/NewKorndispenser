@@ -21,12 +21,13 @@ struct TelemetrySample {
     uint32_t t_ms;       // ms since dispense start
     float setpoint;      // target grams
     float dispensed;     // PID input (grams dispensed so far)
-    float weight;        // raw scale reading (grams)
+    float weight;        // tare-relative scale reading (grams)
+    float gross;         // absolute bag weight vs calibrated zero (grams)
     float servo;         // PID output = servo angle (degrees)
     float p, i, d;       // PID term contributions (GetLastP/I/D)
     float vib;           // vibrator intensity 0..1
 };
-static_assert(sizeof(TelemetrySample) == 36, "unexpected padding");
+static_assert(sizeof(TelemetrySample) == 40, "unexpected padding");
 
 inline constexpr uint32_t TELEM_CAPACITY = 2000;   // 100 s @ 20 Hz, ~70 KB static
 

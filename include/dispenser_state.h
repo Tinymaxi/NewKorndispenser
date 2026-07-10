@@ -17,9 +17,20 @@ enum class WebCommand : uint8_t {
     SetPID,
 };
 
+// One queued web command with its payload
+struct WebCmd {
+    WebCommand cmd = WebCommand::None;
+    int   i0 = 0;                  // target grams / scale index / cal weight
+    float f0 = 0, f1 = 0, f2 = 0;  // servo angle / vib intensity / kp,ki,kd
+};
+
+inline constexpr uint8_t WEBCMD_QUEUE_LEN = 8;
+
 struct DispenserState {
     // --- Written by main loop, read by web server ---
-    float weights[3]       = {0, 0, 0};   // Current weight on each scale (grams)
+    float weights[3]       = {0, 0, 0};   // Tare-relative weight per scale (grams)
+    float gross[3]         = {0, 0, 0};   // Absolute (bag) weight per scale (grams),
+                                          // vs the calibrated zero - unaffected by tare
     int   selected_scale   = 0;            // 0-2
     int   target_grams     = 100;
     bool  dispensing       = false;
@@ -33,16 +44,12 @@ struct DispenserState {
     float vib_intensity  = 0;              // Current vibrator intensity (0-1)
     bool  ap_mode        = false;          // True when serving own AP instead of joining WiFi
 
-    // --- Written by web server, read by main loop ---
-    volatile WebCommand pending_command = WebCommand::None;
-    int   cmd_target       = 0;            // For SetTarget
-    int   cmd_scale        = 0;            // For SelectScale
-    float cmd_servo_angle  = 0.0f;         // For TestServo
-    float cmd_vib_intensity = 0.0f;        // For TestVibrator
-    int   cmd_cal_weight   = 0;            // For Calibrate (known grams)
-    float cmd_pid_kp       = 0;            // For SetPID
-    float cmd_pid_ki       = 0;
-    float cmd_pid_kd       = 0;
+    // --- Command ring queue: web server (lwIP context) pushes at head, main loop
+    // drains from tail under the lwIP lock. A queue (not a single slot) so commands
+    // issued while the main loop is busy (e.g. a ~1.5 s blocking tare) are not lost.
+    WebCmd cmd_queue[WEBCMD_QUEUE_LEN];
+    volatile uint8_t cmd_head = 0;   // next write slot (web server)
+    volatile uint8_t cmd_tail = 0;   // next read slot (main loop)
 };
 
 #endif // _DISPENSER_STATE_H

@@ -66,18 +66,58 @@ float hx711::calibr_read_average(uint8_t times)
 //
 //  MODE
 //
-// read_weight(): NO FIFO discard, just a light average for responsiveness
+// Drain the RX FIFO, keeping only the newest queued sample. The HX711 free-runs
+// at ~10 SPS into a 4-deep FIFO; when consumed slower than that, the oldest
+// entry is ~1 s stale - always skip to the freshest.
+bool hx711::drain_fifo(int32_t& newest)
+{
+    bool got = false;
+    while (!pio_sm_is_rx_fifo_empty(pio_, sm_))
+    {
+        uint32_t raw = pio_sm_get(pio_, sm_);
+        if (raw & 0x00800000) raw |= 0xFF000000;
+        newest = (int32_t)raw;
+        got = true;
+    }
+    return got;
+}
+
 float hx711::read_weight(int samples /*=1*/)
 {
     if (samples < 1) samples = 1;
 
-    int64_t sum = 0;
-    for (int i = 0; i < samples; ++i)
-        sum += (int64_t)read_raw_hx711();
+    if (samples == 1)
+    {
+        // Freshest-available, non-blocking once a first sample exists:
+        // take the newest queued sample, else keep the last known one.
+        int32_t v;
+        if (drain_fifo(v)) {
+            last_raw_ = v;
+            has_last_ = true;
+        } else if (!has_last_) {
+            last_raw_ = read_raw_hx711();   // very first read - wait for a conversion
+            has_last_ = true;
+        }
+    }
+    else
+    {
+        // Averaged read: discard the stale backlog, then block for fresh samples
+        int32_t dump;
+        drain_fifo(dump);
+        int64_t sum = 0;
+        for (int i = 0; i < samples; ++i)
+            sum += (int64_t)read_raw_hx711();
+        last_raw_ = (int32_t)(sum / samples);
+        has_last_ = true;
+    }
 
-    int32_t avg = (int32_t)(sum / samples);
-    int32_t net = avg - offset_;
+    int32_t net = last_raw_ - offset_;
     return (float)net / scale_cpg_;    // counts-per-gram
+}
+
+float hx711::last_gross() const
+{
+    return (float)(last_raw_ - cal_offset_) / scale_cpg_;
 }
 
 // Configure trimmed moving average parameters
@@ -168,6 +208,16 @@ void hx711::set_offset(int32_t off)
 int32_t hx711::get_offset() const
 {
     return offset_;
+}
+
+void hx711::set_cal_offset(int32_t off)
+{
+    cal_offset_ = off;
+}
+
+int32_t hx711::get_cal_offset() const
+{
+    return cal_offset_;
 }
 
 // Assumes tare() has been set.

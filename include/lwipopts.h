@@ -38,7 +38,14 @@
 #define LWIP_CALLBACK_API           1
 
 #define ETHARP_TRUST_IP_MAC         0
-#define LWIP_NUM_NETIF_CLIENT_DATA  1
+
+// mDNS responder (http://korn.local) - needs IPv4 multicast, one extra UDP PCB,
+// one netif client-data slot, and one extra sys timeout for its probe/announce
+#define LWIP_MDNS_RESPONDER         1
+#define LWIP_IGMP                   1
+#define MEMP_NUM_UDP_PCB            5
+#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+#define LWIP_NUM_NETIF_CLIENT_DATA  2
 
 // Checksum
 #define LWIP_CHKSUM_ALGORITHM       3
