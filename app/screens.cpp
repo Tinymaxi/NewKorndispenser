@@ -80,12 +80,16 @@ public:
         ctx.lcd.clear();
         ctx.lcd.setCursor(0, 0);
         ctx.lcd.print("Select Scale:");
-        ctx.lcd.setCursor(1, 2);
-        ctx.lcd.print("Scale 1");
-        ctx.lcd.setCursor(2, 2);
-        ctx.lcd.print("Scale 2");
-        ctx.lcd.setCursor(3, 2);
-        ctx.lcd.print("Scale 3");
+        for (int i = 0; i < 3; i++) {
+            char row[21];
+            if (ctx.names && ctx.names[i][0]) {
+                std::snprintf(row, sizeof(row), "%d: %.15s", i + 1, ctx.names[i]);
+            } else {
+                std::snprintf(row, sizeof(row), "Scale %d", i + 1);
+            }
+            ctx.lcd.setCursor(1 + i, 2);
+            ctx.lcd.print(row);
+        }
         indicatorArrow(ctx.lcd, 0, 1, 3);  // Arrow on rows 1-3
         last_selected_ = 0;
     }
@@ -449,7 +453,12 @@ public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
         char title[21];
-        std::snprintf(title, sizeof(title), "Weighing - Scale %d", ctx.selected_scale + 1);
+        if (ctx.names && ctx.names[ctx.selected_scale][0]) {
+            std::snprintf(title, sizeof(title), "Weigh %d: %.11s",
+                          ctx.selected_scale + 1, ctx.names[ctx.selected_scale]);
+        } else {
+            std::snprintf(title, sizeof(title), "Weighing - Scale %d", ctx.selected_scale + 1);
+        }
         ctx.lcd.setCursor(0, 0);
         ctx.lcd.print(title);
 
@@ -554,7 +563,12 @@ public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
         char title[21];
-        std::snprintf(title, sizeof(title), "Dispense - Scale %d", ctx.selected_scale + 1);
+        if (ctx.names && ctx.names[ctx.selected_scale][0]) {
+            std::snprintf(title, sizeof(title), "Disp %d: %.12s",
+                          ctx.selected_scale + 1, ctx.names[ctx.selected_scale]);
+        } else {
+            std::snprintf(title, sizeof(title), "Dispense - Scale %d", ctx.selected_scale + 1);
+        }
         ctx.lcd.setCursor(0, 0);
         ctx.lcd.print(title);
 
@@ -661,7 +675,8 @@ public:
                 dispense_start_ms_ = to_ms_since_boot(get_absolute_time());
                 ctx.net_lock();
                 telem_begin_run((uint8_t)ctx.selected_scale, (uint16_t)ctx.target_grams,
-                                (float)ctx.Kp, (float)ctx.Ki, (float)ctx.Kd);
+                                (float)ctx.Kp, (float)ctx.Ki, (float)ctx.Kd,
+                                ctx.names ? ctx.names[ctx.selected_scale] : "");
                 ctx.net_unlock();
 
                 state_ = DispenseState::Running;

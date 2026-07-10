@@ -39,9 +39,11 @@ struct TelemetryMeta {
     uint16_t target_g;
     float    kp, ki, kd;
     float    final_g;    // set by end_run (0 while active)
+    char     name[16];   // scale contents at run start ("Wheat", ...)
 };
 
-void telem_begin_run(uint8_t scale, uint16_t target_g, float kp, float ki, float kd);
+void telem_begin_run(uint8_t scale, uint16_t target_g, float kp, float ki, float kd,
+                     const char* name);
 void telem_append(const TelemetrySample& s);        // drops silently when full
 void telem_end_run(float final_g);
 TelemetryMeta telem_meta();                          // safe from IRQ context

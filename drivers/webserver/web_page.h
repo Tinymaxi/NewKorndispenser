@@ -34,6 +34,8 @@ section h2{font-size:11px;font-weight:600;text-transform:uppercase;
  border-top:2px solid transparent;touch-action:manipulation;
  -webkit-user-select:none;user-select:none}
 .scell.active{border-top-color:var(--red)}
+.scell .sn{font-size:11px;font-weight:600;margin-top:3px;letter-spacing:.02em;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scell .sw{font-size:20px;font-weight:700;margin:4px 0 2px}
 .scell .sc{font-size:10px;letter-spacing:.05em;color:var(--ink2)}
 .scell .sc.no{color:var(--red)}
@@ -52,6 +54,13 @@ input[type=number]{width:100%;padding:8px 2px;border:0;border-bottom:1px solid v
  background:transparent;color:var(--ink);font-size:20px;font-family:inherit;
  font-variant-numeric:tabular-nums;text-align:right;border-radius:0;
  -moz-appearance:textfield}
+.crow{display:flex;align-items:center;gap:12px;margin:10px 0}
+.crow .lbl{min-width:14px}
+.crow select{flex:1;padding:8px 2px;border:0;border-bottom:1px solid var(--ink);
+ background:transparent;color:var(--ink);font-size:14px;font-family:inherit;
+ border-radius:0;-webkit-appearance:none;appearance:none}
+.crow input[type=text]{flex:1;padding:8px 2px;border:0;border-bottom:1px solid var(--ink);
+ background:transparent;color:var(--ink);font-size:14px;font-family:inherit;border-radius:0}
 input:focus{outline:none;border-bottom:2px solid var(--ink)}
 input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none}
 .row{display:flex;gap:8px;margin-top:14px}
@@ -101,6 +110,11 @@ td.bad{color:var(--red)}
 <section>
 <h2>Scales</h2>
 <div class="scales" id="scaleDash"></div>
+</section>
+
+<section>
+<h2>Contents</h2>
+<div id="contentsRows"></div>
 </section>
 
 <section>
@@ -266,6 +280,47 @@ function tgl(k){
  if(R&&!prevDisp)drawRun();else drawLive(lastTgt);
 }
 
+// --- Scale contents (grain names) ---
+const PRESETS=['Wheat','Rye','Spelt','Oats','Barley','Maize'];
+let contentsBuilt=false;
+function buildContents(){
+ let html='';
+ for(let i=0;i<3;i++){
+  html+='<div class="crow"><span class="lbl">'+(i+1)+'</span>'+
+   '<select id="nsel'+i+'" onchange="nameSel('+i+')">'+
+   '<option value="">&mdash;</option>'+
+   PRESETS.map(p=>'<option>'+p+'</option>').join('')+
+   '<option value="__c">Custom&hellip;</option></select>'+
+   '<input type="text" id="ncust'+i+'" maxlength="15" style="display:none" '+
+   'placeholder="Name" onchange="nameCustom('+i+')">'+
+   '</div>';
+ }
+ $('contentsRows').innerHTML=html;
+ contentsBuilt=true;
+}
+function nameSel(i){
+ let v=$('nsel'+i).value;
+ if(v==='__c'){$('ncust'+i).style.display='block';$('ncust'+i).value='';$('ncust'+i).focus();return;}
+ $('ncust'+i).style.display='none';
+ api('POST','/api/name',{scale:i,name:v});
+}
+function nameCustom(i){
+ let v=$('ncust'+i).value.trim().slice(0,15);
+ api('POST','/api/name',{scale:i,name:v});
+}
+function syncNames(d){
+ if(!d.names)return;
+ if(!contentsBuilt)buildContents();
+ for(let i=0;i<3;i++){
+  let sel=$('nsel'+i),cust=$('ncust'+i);
+  if(document.activeElement===sel||document.activeElement===cust)continue;
+  let n=d.names[i]||'';
+  if(n===''){sel.value='';cust.style.display='none';}
+  else if(PRESETS.indexOf(n)>=0){sel.value=n;cust.style.display='none';}
+  else{sel.value='__c';cust.style.display='block';cust.value=n;}
+ }
+}
+
 // --- Scale dashboard ---
 let dashBuilt=false;
 function buildDash(d){
@@ -273,6 +328,7 @@ function buildDash(d){
   let html='';
   for(let i=0;i<3;i++){
    html+='<div class="scell" id="sc'+i+'"><div class="lbl">Scale '+(i+1)+'</div>'+
+    '<div class="sn" id="scn'+i+'">&mdash;</div>'+
     '<div class="sw num" id="scw'+i+'">&ndash;</div>'+
     '<div class="sc" id="scc'+i+'"></div></div>';
   }
@@ -292,6 +348,7 @@ function buildDash(d){
  let act=pendingScale>=0?pendingScale:d.selected_scale;
  for(let i=0;i<3;i++){
   $('sc'+i).classList.toggle('active',i===act);
+  $('scn'+i).textContent=(d.names&&d.names[i])?d.names[i]:'\u2014';
   let g=d.gross?d.gross[i]:d.weights[i];   // cards show the bag's absolute weight
   $('scw'+i).textContent=g.toFixed(0)+' g';
   let ce=$('scc'+i),cal=d.scale_calibrated[i];
@@ -491,12 +548,14 @@ function loadRun(id){
   // Validate against metadata (stream may truncate if a new run started)
   if(meta.samples&&data.t.length<meta.samples)throw 0;
   R=data;
-  R.meta={run_id:meta.run_id||id,scale:meta.scale||1,target:meta.target_g||0,
+  R.meta={run_id:meta.run_id||id,scale:meta.scale||1,name:meta.name||'',
+   target:meta.target_g||0,
    kp:meta.kp,ki:meta.ki,kd:meta.kd,final:meta.final_g,samples:data.t.length};
   lastRunLoaded=id;
   loadingRun=false;
   $('dlRow').style.display='flex';
   $('runMeta').textContent='RUN '+R.meta.run_id+' · SCALE '+R.meta.scale+
+   (R.meta.name?' · '+String(R.meta.name).toUpperCase():'')+
    ' · '+R.meta.samples+' SAMPLES · KP '+R.meta.kp+' KI '+R.meta.ki+
    ' KD '+R.meta.kd+' · FINAL '+R.meta.final+' G';
   drawRun();
@@ -517,7 +576,7 @@ function renderHistory(){
   let e=history[i];
   let acc=(e.actual/e.target*100).toFixed(1);
   let bad=Math.abs(e.actual-e.target)>e.target*0.05;
-  html+='<tr><td>'+e.time+'</td><td>'+e.scale+'</td><td>'+e.target+' g</td><td>'+
+  html+='<tr><td>'+e.time+'</td><td>'+(e.name||e.scale)+'</td><td>'+e.target+' g</td><td>'+
    e.actual.toFixed(1)+' g</td><td'+(bad?' class="bad"':'')+'>'+acc+'%</td></tr>';
  }
  body.innerHTML=html;
@@ -563,13 +622,15 @@ function poll(){
    let bars=rssi>-50?'▂▄▆█':rssi>-65?'▂▄▆':rssi>-75?'▂▄':'▂';
    net=bars+' '+rssi+' dBm';
   }
-  $('statusText').innerHTML='<span class="on">SCALE '+(d.selected_scale+1)+'</span> · '+st+
+  let gname=(d.names&&d.names[d.selected_scale])?' · '+d.names[d.selected_scale].toUpperCase():'';
+  $('statusText').innerHTML='<span class="on">SCALE '+(d.selected_scale+1)+gname+'</span> · '+st+
    (cal?'':' · <span class="ap">NOT CALIBRATED</span>')+' · '+net;
   let bag=d.gross?d.gross[d.selected_scale]:0;
   $('dispStatus').textContent=(d.dispensing?
    disp.toFixed(1)+' of '+tgt+' g':'Target '+tgt+' g')+' · Bag '+bag.toFixed(0)+' g';
 
   buildDash(d);
+  syncNames(d);
 
   // Live graph while dispensing (or before any run is loaded)
   lastTgt=tgt;
@@ -603,7 +664,7 @@ function poll(){
   // History entry on dispense completion
   if(d.dispense_done&&!prevDone&&prevDisp){
    history.push({time:new Date().toLocaleTimeString(),scale:d.selected_scale+1,
-    target:tgt,actual:disp});
+    name:(d.names&&d.names[d.selected_scale])||'',target:tgt,actual:disp});
    localStorage.setItem('kd_history',JSON.stringify(history));
    renderHistory();
   }

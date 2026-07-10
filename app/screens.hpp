@@ -59,6 +59,10 @@ struct UiContext {
     void (*net_lock)();
     void (*net_unlock)();
 
+    // Scale content names ("Wheat", ...) - points at g_state.names; read-only
+    // for screens (writes go through the web SetName command in main.cpp)
+    const char (*names)[16] = nullptr;
+
     // Cross-screen UI state
     int  selected_scale = 0;     // 0..2
     int  target_grams   = 100;

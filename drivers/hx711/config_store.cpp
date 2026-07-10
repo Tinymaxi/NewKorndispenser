@@ -101,3 +101,49 @@ bool save_pid_config(const PidConfig& cfg_in) {
     std::memcpy(&check, reinterpret_cast<const void*>(PID_CFG_XIP_ADDR), sizeof(check));
     return (check.magic == tmp.magic) && (check.crc32 == tmp.crc32);
 }
+
+// ---- Per-scale content names (third-to-last sector) -------------------------
+
+static constexpr uint32_t NAME_CFG_OFFSET   = (PICO_FLASH_SIZE_BYTES - 3 * CFG_SECTOR_SIZE);
+static constexpr uint32_t NAME_CFG_XIP_ADDR = (XIP_BASE + NAME_CFG_OFFSET);
+
+bool load_name_config(NameConfig& cfg) {
+    NameConfig tmp{};
+    std::memcpy(&tmp, reinterpret_cast<const void*>(NAME_CFG_XIP_ADDR), sizeof(tmp));
+
+    if (tmp.magic != 0x4E414D31) return false;
+
+    uint32_t expected = crc32_calc(&tmp, offsetof(NameConfig, crc32));
+    if (expected != tmp.crc32) return false;
+
+    // Enforce termination and printable ASCII (the names travel through JSON,
+    // CSV metadata and the HD44780 LCD)
+    for (int i = 0; i < 3; i++) {
+        tmp.names[i][SCALE_NAME_LEN - 1] = '\0';
+        for (char* p = tmp.names[i]; *p; ++p) {
+            if (*p < 0x20 || *p > 0x7E) { *p = '\0'; break; }
+        }
+    }
+
+    cfg = tmp;
+    return true;
+}
+
+bool save_name_config(const NameConfig& cfg_in) {
+    alignas(FLASH_PAGE_SIZE) static uint8_t sector_buf[CFG_SECTOR_SIZE];
+    std::memset(sector_buf, 0xFF, sizeof(sector_buf));
+
+    NameConfig tmp = cfg_in;
+    tmp.magic = 0x4E414D31;
+    tmp.crc32 = crc32_calc(&tmp, offsetof(NameConfig, crc32));
+    std::memcpy(sector_buf, &tmp, sizeof(tmp));
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    flash_range_erase(NAME_CFG_OFFSET, CFG_SECTOR_SIZE);
+    flash_range_program(NAME_CFG_OFFSET, sector_buf, CFG_SECTOR_SIZE);
+    restore_interrupts(irq_state);
+
+    NameConfig check{};
+    std::memcpy(&check, reinterpret_cast<const void*>(NAME_CFG_XIP_ADDR), sizeof(check));
+    return (check.magic == tmp.magic) && (check.crc32 == tmp.crc32);
+}

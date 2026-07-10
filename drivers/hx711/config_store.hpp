@@ -29,6 +29,19 @@ struct PidConfig {
 bool load_pid_config(PidConfig& cfg);
 bool save_pid_config(const PidConfig& cfg);
 
+// Per-scale content names ("Wheat", "Spelt", ...), persisted in the
+// third-to-last flash sector. Changed whenever a bag is swapped.
+inline constexpr int SCALE_NAME_LEN = 16;   // 15 chars + NUL
+
+struct NameConfig {
+    uint32_t magic = 0x4E414D31;   // "NAM1"
+    char names[3][SCALE_NAME_LEN] = {{0}, {0}, {0}};
+    uint32_t crc32 = 0;
+};
+
+bool load_name_config(NameConfig& cfg);
+bool save_name_config(const NameConfig& cfg);
+
 template <class HX711>
 inline void apply_scale_config(HX711& scale, const ScaleEntry& e) {
     scale.set_offset(e.offset_counts);

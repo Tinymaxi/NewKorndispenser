@@ -15,7 +15,8 @@ static DispenserState* g_state = nullptr;
 
 // Push a command onto the ring queue (runs in lwIP callback context; the main
 // loop drains under the lwIP lock, so head/tail can't race). Drops when full.
-static void push_cmd(WebCommand cmd, int i0 = 0, float f0 = 0, float f1 = 0, float f2 = 0) {
+static void push_cmd(WebCommand cmd, int i0 = 0, float f0 = 0, float f1 = 0, float f2 = 0,
+                     const char* s0 = nullptr) {
     uint8_t next = (uint8_t)((g_state->cmd_head + 1) % WEBCMD_QUEUE_LEN);
     if (next == g_state->cmd_tail) return;   // full - drop newest
     WebCmd& slot = g_state->cmd_queue[g_state->cmd_head];
@@ -24,7 +25,25 @@ static void push_cmd(WebCommand cmd, int i0 = 0, float f0 = 0, float f1 = 0, flo
     slot.f0 = f0;
     slot.f1 = f1;
     slot.f2 = f2;
+    slot.s0[0] = '\0';
+    if (s0) {
+        strncpy(slot.s0, s0, sizeof(slot.s0) - 1);
+        slot.s0[sizeof(slot.s0) - 1] = '\0';
+    }
     g_state->cmd_head = next;                // publish after the slot is written
+}
+
+// Scale names travel through JSON, the CSV metadata line (comma/equals
+// delimited) and the HD44780 LCD: keep printable ASCII, drop " \ , =
+static void sanitize_name(char* s) {
+    char* w = s;
+    for (char* r = s; *r; ++r) {
+        char c = *r;
+        if (c < 0x20 || c > 0x7E) continue;
+        if (c == '"' || c == '\\' || c == ',' || c == '=') continue;
+        *w++ = c;
+    }
+    *w = '\0';
 }
 
 // ---------- helpers ----------------------------------------------------------
@@ -242,10 +261,10 @@ static err_t send_more_csv(struct tcp_pcb* pcb, ConnState* cs) {
             const TelemetryMeta& m = cs->csv_meta;
             cs->csv_len = snprintf(cs->csv_buf, sizeof(cs->csv_buf),
                 "# korndispenser-pid-log v2\n"
-                "# run_id=%u,scale=%u,target_g=%u,kp=%.3f,ki=%.4f,kd=%.3f,"
+                "# run_id=%u,scale=%u,name=%s,target_g=%u,kp=%.3f,ki=%.4f,kd=%.3f,"
                 "samples=%u,final_g=%.1f,sample_ms=100\n"
                 "t_ms,setpoint_g,dispensed_g,weight_g,gross_g,servo_deg,p_term,i_term,d_term,vib\n",
-                (unsigned)m.run_id, (unsigned)(m.scale + 1), (unsigned)m.target_g,
+                (unsigned)m.run_id, (unsigned)(m.scale + 1), m.name, (unsigned)m.target_g,
                 (double)m.kp, (double)m.ki, (double)m.kd,
                 (unsigned)m.count, (double)m.final_g);
             cs->csv_off = 0;
@@ -396,11 +415,12 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
 
         TelemetryMeta tm = telem_meta();
 
-        char json[896];
+        char json[1024];
         int n = snprintf(json, sizeof(json),
             "{"
             "\"weights\":[%.1f,%.1f,%.1f],"
             "\"gross\":[%.1f,%.1f,%.1f],"
+            "\"names\":[\"%s\",\"%s\",\"%s\"],"
             "\"selected_scale\":%d,"
             "\"target_grams\":%d,"
             "\"dispensing\":%s,"
@@ -415,6 +435,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             "}",
             g_state->weights[0], g_state->weights[1], g_state->weights[2],
             g_state->gross[0], g_state->gross[1], g_state->gross[2],
+            g_state->names[0], g_state->names[1], g_state->names[2],
             g_state->selected_scale,
             g_state->target_grams,
             g_state->dispensing ? "true" : "false",
@@ -501,6 +522,18 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
 
         if (strcmp(path, "/api/calibrate") == 0) {
             push_cmd(WebCommand::Calibrate, parse_int_field(body, "weight"));
+            send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
+            return;
+        }
+
+        if (strcmp(path, "/api/name") == 0) {
+            char name[16] = {0};
+            parse_string_field(body, "name", name, sizeof(name));
+            sanitize_name(name);
+            int scale = parse_int_field(body, "scale");
+            if (scale >= 0 && scale <= 2) {
+                push_cmd(WebCommand::SetName, scale, 0, 0, 0, name);
+            }
             send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
             return;
         }

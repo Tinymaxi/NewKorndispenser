@@ -15,6 +15,7 @@ enum class WebCommand : uint8_t {
     TestStop,
     Calibrate,
     SetPID,
+    SetName,
 };
 
 // One queued web command with its payload
@@ -22,6 +23,7 @@ struct WebCmd {
     WebCommand cmd = WebCommand::None;
     int   i0 = 0;                  // target grams / scale index / cal weight
     float f0 = 0, f1 = 0, f2 = 0;  // servo angle / vib intensity / kp,ki,kd
+    char  s0[16] = {0};            // scale content name (SetName)
 };
 
 inline constexpr uint8_t WEBCMD_QUEUE_LEN = 8;
@@ -31,6 +33,7 @@ struct DispenserState {
     float weights[3]       = {0, 0, 0};   // Tare-relative weight per scale (grams)
     float gross[3]         = {0, 0, 0};   // Absolute (bag) weight per scale (grams),
                                           // vs the calibrated zero - unaffected by tare
+    char  names[3][16]     = {{0},{0},{0}};  // Scale contents ("Wheat", "Spelt", ...)
     int   selected_scale   = 0;            // 0-2
     int   target_grams     = 100;
     bool  dispensing       = false;

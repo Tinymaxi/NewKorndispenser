@@ -82,6 +82,19 @@ static void save_pid_gains() {
     save_pid_config(pc);  // stalls IRQs ~100 ms - only call while not dispensing
 }
 
+// Scale content names ("Wheat", "Spelt", ...) - mirrored in g_state.names for
+// the web UI and persisted to flash. Deferred like the PID save: flash writes
+// stall IRQs ~100 ms and must never land mid-dispense.
+static bool name_save_pending = false;
+
+static void save_scale_names() {
+    NameConfig nc;
+    for (int i = 0; i < 3; i++) {
+        std::snprintf(nc.names[i], SCALE_NAME_LEN, "%s", g_state.names[i]);
+    }
+    save_name_config(nc);
+}
+
 // --- Access-point fallback ---------------------------------------------------
 // When the router is unreachable, the Pico broadcasts its own network so a phone
 // can join it directly and use the web app at http://192.168.4.1.
@@ -141,6 +154,16 @@ int main()
             Kp = pc.kp;
             Ki = pc.ki;
             Kd = pc.kd;
+        }
+    }
+
+    // Load persisted scale content names
+    {
+        NameConfig nc;
+        if (load_name_config(nc)) {
+            for (int i = 0; i < 3; i++) {
+                std::snprintf(g_state.names[i], sizeof(g_state.names[i]), "%s", nc.names[i]);
+            }
         }
     }
 
@@ -347,6 +370,7 @@ int main()
         lcd, enc, bz, scales, servos, vibrators, sevenSeg, sc, g_state,
         Kp, Ki, Kd, dispense_pid, &net_lock, &net_unlock
     };
+    ctx.names = g_state.names;
 
     ScreenManager mgr;
     mgr.init(ctx, isConfigured ? ScreenId::Menu : ScreenId::SelectScale);
@@ -493,6 +517,20 @@ int main()
                 }
                 break;
 
+            case WebCommand::SetName:
+                if (c.i0 >= 0 && c.i0 <= 2) {
+                    net_lock();
+                    std::snprintf(g_state.names[c.i0], sizeof(g_state.names[c.i0]),
+                                  "%s", c.s0);
+                    net_unlock();
+                    if (!g_state.dispensing) {
+                        save_scale_names();
+                    } else {
+                        name_save_pending = true;
+                    }
+                }
+                break;
+
             case WebCommand::Calibrate:
                 if (c.i0 > 0) {
                     scales[ctx.selected_scale]->calibrate_scale(
@@ -514,10 +552,14 @@ int main()
             }
         }
 
-        // Flush a PID save that was deferred because a dispense was running
+        // Flush saves that were deferred because a dispense was running
         if (pid_save_pending && !g_state.dispensing) {
             pid_save_pending = false;
             save_pid_gains();
+        }
+        if (name_save_pending && !g_state.dispensing) {
+            name_save_pending = false;
+            save_scale_names();
         }
 
         // When web is active, show status on LCD but skip all hardware input.

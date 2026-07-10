@@ -12,8 +12,10 @@ static uint8_t  s_scale    = 0;
 static uint16_t s_target_g = 0;
 static float    s_kp = 0, s_ki = 0, s_kd = 0;
 static float    s_final_g  = 0;
+static char     s_name[16] = {0};
 
-void telem_begin_run(uint8_t scale, uint16_t target_g, float kp, float ki, float kd) {
+void telem_begin_run(uint8_t scale, uint16_t target_g, float kp, float ki, float kd,
+                     const char* name) {
     // Caller holds the lwIP lock (cyw43_arch_lwip_begin) so an in-flight CSV
     // reader cannot observe the reset mid-row.
     s_count  = 0;
@@ -21,6 +23,11 @@ void telem_begin_run(uint8_t scale, uint16_t target_g, float kp, float ki, float
     s_target_g = target_g;
     s_kp = kp; s_ki = ki; s_kd = kd;
     s_final_g = 0;
+    s_name[0] = '\0';
+    if (name) {
+        for (unsigned i = 0; i < sizeof(s_name) - 1 && name[i]; i++) s_name[i] = name[i];
+        s_name[sizeof(s_name) - 1] = '\0';
+    }
     s_active  = true;
     s_run_id  = s_run_id + 1;
 }
@@ -47,6 +54,7 @@ TelemetryMeta telem_meta() {
     m.target_g = s_target_g;
     m.kp = s_kp; m.ki = s_ki; m.kd = s_kd;
     m.final_g = s_final_g;
+    for (unsigned i = 0; i < sizeof(m.name); i++) m.name[i] = s_name[i];
     return m;
 }
 
