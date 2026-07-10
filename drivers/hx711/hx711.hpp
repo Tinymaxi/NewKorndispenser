@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "hardware/pio.h"
+#include "pico/time.h"
 
 class hx711
 {
@@ -14,6 +15,10 @@ public:
     //
     //  From datasheet page 4
     int32_t read_raw_hx711();
+    //  Timeout-guarded read: false if no conversion arrived (dead sensor).
+    //  A disconnected HX711 must never freeze the firmware.
+    bool    read_raw_timeout(int32_t& out, uint32_t timeout_us);
+    //  Returns NAN when the sensor produces no data.
     float   calibr_read_average(uint8_t times);
 
     ///////////////////////////////////////////////////////
@@ -86,6 +91,7 @@ private:
     int32_t cal_offset_{ 0 };    // calibrated zero (from flash, survives tare)
     int32_t last_raw_  { 0 };    // newest raw sample seen by read_weight
     bool    has_last_  { false };
+    absolute_time_t next_probe_ { 0 };  // backoff for probing a silent sensor
 
     // --- Trimmed moving average state ---
     static constexpr uint8_t TMA_MAX_WINDOW = 16; // supports up to 16 samples

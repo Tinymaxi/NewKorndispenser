@@ -8,6 +8,7 @@
 
 #include "hx711.hpp"
 #include <cstdio>
+#include <cmath>
 #include "pico/time.h"
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
@@ -47,19 +48,41 @@ int32_t hx711::read_raw_hx711()
     return static_cast<int32_t>(raw);
 }
 
-// FIFO discard before reading average.
+// Wait up to timeout_us for a conversion. A disconnected/unpowered HX711 never
+// pushes a sample - without a timeout, the first read would block the whole
+// firmware forever (frozen LCD, dead network).
+bool hx711::read_raw_timeout(int32_t& out, uint32_t timeout_us)
+{
+    absolute_time_t deadline = make_timeout_time_us(timeout_us);
+    while (pio_sm_is_rx_fifo_empty(pio_, sm_))
+    {
+        if (time_reached(deadline)) return false;
+        tight_loop_contents();
+    }
+    uint32_t raw = pio_sm_get(pio_, sm_);
+    if (raw & 0x00800000) raw |= 0xFF000000;
+    out = static_cast<int32_t>(raw);
+    return true;
+}
+
+// FIFO discard before reading average. Returns NAN if the sensor produces no
+// data (disconnected) so callers can abort instead of freezing the firmware.
 float hx711::calibr_read_average(uint8_t times)
 {
     const uint32_t discardReads = 6;
     int64_t sum = 0;                 // accumulate in wider int
     for (uint8_t i = 0; i < times + discardReads; i++)
     {
-        int32_t v = read_raw_hx711();   
+        int32_t v;
+        if (!read_raw_timeout(v, 150000)) {
+            printf("[hx711] calibr read timeout on DT pin %u\n", dataPin_);
+            return NAN;
+        }
         if (i >= discardReads) sum += v;
     }
     float calibration = (float)sum / (float)times;
     printf("Calibration read average : %.6f\n", calibration);
-    return (float)sum / (float)times;
+    return calibration;
 }
 
 ///////////////////////////////////////////////////////
@@ -86,6 +109,9 @@ float hx711::read_weight(int samples /*=1*/)
 {
     if (samples < 1) samples = 1;
 
+    // ~150 ms covers one conversion at 10 SPS with margin
+    constexpr uint32_t SAMPLE_TIMEOUT_US = 150000;
+
     if (samples == 1)
     {
         // Freshest-available, non-blocking once a first sample exists:
@@ -95,20 +121,38 @@ float hx711::read_weight(int samples /*=1*/)
             last_raw_ = v;
             has_last_ = true;
         } else if (!has_last_) {
-            last_raw_ = read_raw_hx711();   // very first read - wait for a conversion
-            has_last_ = true;
+            // Very first read: wait one conversion, but never hang on a dead
+            // sensor - probe again at most every 2 s and report 0 g meanwhile
+            if (!time_reached(next_probe_)) return 0.0f;
+            if (read_raw_timeout(v, SAMPLE_TIMEOUT_US)) {
+                last_raw_ = v;
+                has_last_ = true;
+            } else {
+                printf("[hx711] no data on DT pin %u (sensor disconnected?)\n", dataPin_);
+                next_probe_ = make_timeout_time_ms(2000);
+                return 0.0f;
+            }
         }
     }
     else
     {
-        // Averaged read: discard the stale backlog, then block for fresh samples
+        // Averaged read: discard the stale backlog, then wait for fresh samples
         int32_t dump;
         drain_fifo(dump);
         int64_t sum = 0;
-        for (int i = 0; i < samples; ++i)
-            sum += (int64_t)read_raw_hx711();
-        last_raw_ = (int32_t)(sum / samples);
-        has_last_ = true;
+        int got = 0;
+        for (int i = 0; i < samples; ++i) {
+            int32_t v;
+            if (!read_raw_timeout(v, SAMPLE_TIMEOUT_US)) break;
+            sum += (int64_t)v;
+            got++;
+        }
+        if (got == 0) {
+            if (!has_last_) return 0.0f;   // dead sensor - keep last known if any
+        } else {
+            last_raw_ = (int32_t)(sum / got);
+            has_last_ = true;
+        }
     }
 
     int32_t net = last_raw_ - offset_;
@@ -166,7 +210,12 @@ float hx711::read_weight_trimmed_mavg()
 void hx711::tare(int samples)
 {
     if (samples < 1) samples = 7;
-    offset_ = (int32_t)calibr_read_average((uint8_t)samples);
+    float avg = calibr_read_average((uint8_t)samples);
+    if (avg != avg) {   // NAN - dead sensor, keep the previous offset
+        printf("Tare skipped: no sensor data\n");
+        return;
+    }
+    offset_ = (int32_t)avg;
     printf("Tare Offset : %d\n",offset_);
 }
 
@@ -228,7 +277,12 @@ void hx711::calibrate_scale(float known_grams, int samples /*=10*/)
     if (known_grams <= 0.0f) return;   // ignore bad input
     printf("Known gramms : %6.f\n",known_grams);
     // Assumes you've already called tare()
-    int32_t avg = (int32_t)calibr_read_average((uint8_t)samples);
+    float avg_f = calibr_read_average((uint8_t)samples);
+    if (avg_f != avg_f) {   // NAN - dead sensor, leave calibration unchanged
+        printf("Calibrate skipped: no sensor data\n");
+        return;
+    }
+    int32_t avg = (int32_t)avg_f;
     int32_t net = avg - offset_;                // counts due to known_grams
     float cpg = (float)net / known_grams;       // counts per gram
     if (cpg <= 0.0f) cpg = 1.0f;

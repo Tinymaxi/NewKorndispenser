@@ -40,11 +40,13 @@
 #define ETHARP_TRUST_IP_MAC         0
 
 // mDNS responder (http://korn.local) - needs IPv4 multicast, one extra UDP PCB,
-// one netif client-data slot, and one extra sys timeout for its probe/announce
+// one netif client-data slot, and several extra sys timeouts: the responder runs
+// probe, announce AND multicast-TTL-reset timers concurrently. +1 was too few -
+// the pool ran dry ~30 s after boot and lwIP panicked (halting the device).
 #define LWIP_MDNS_RESPONDER         1
 #define LWIP_IGMP                   1
 #define MEMP_NUM_UDP_PCB            5
-#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+#define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 8)
 #define LWIP_NUM_NETIF_CLIENT_DATA  2
 
 // Checksum
