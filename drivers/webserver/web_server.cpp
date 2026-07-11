@@ -549,6 +549,12 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             return;
         }
 
+        if (strcmp(path, "/api/estop") == 0) {
+            push_cmd(WebCommand::EStop);
+            send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
+            return;
+        }
+
         if (strcmp(path, "/api/name") == 0) {
             char name[16] = {0};
             parse_string_field(body, "name", name, sizeof(name));

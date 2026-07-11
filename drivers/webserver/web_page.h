@@ -119,12 +119,19 @@ th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;
 td{padding:6px 4px;border-bottom:1px solid var(--hair)}
 td.bad{color:var(--red)}
 .empty{font-size:12px;color:var(--ink2);margin-top:8px}
+/* Emergency stop: pinned to the bottom, shown only while something can move */
+#estop{position:fixed;left:0;right:0;bottom:0;display:none;z-index:60;
+ background:var(--red);color:#fff;border:0;padding:18px 8px;width:100%;
+ font-family:inherit;font-size:15px;font-weight:700;letter-spacing:.18em;
+ text-transform:uppercase;cursor:pointer}
+#estop:active{background:#a00048}
+body.estop-on{padding-bottom:64px}
 </style>
 </head>
 <body>
 
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v2</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v3</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -258,6 +265,8 @@ td.bad{color:var(--red)}
 </div>
 </section>
 
+<button id="estop" onclick="doEstop()">Stop</button>
+
 <script>
 const $=id=>document.getElementById(id);
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
@@ -370,15 +379,37 @@ function stopDisp(){api('POST','/api/dispense',{action:'stop'});}
 function sendServo(v){
  $('servoVal').textContent=v+'°';
  api('POST','/api/test/servo',{angle:parseInt(v)});
+ syncEstop();
 }
 function sendVib(v){
  $('vibVal').textContent=v+'%';
  api('POST','/api/test/vibrator',{intensity:parseInt(v)/100});
+ syncEstop();
 }
 function testStop(){
  $('servoSlider').value=0;$('servoVal').textContent='0°';
  $('vibSlider').value=0;$('vibVal').textContent='0%';
  api('POST','/api/test/stop');
+ syncEstop();
+}
+// --- Emergency stop bar: visible while dispensing or any test control is live
+let lastDispensing=false;
+function testEngaged(){
+ return (+$('servoSlider').value>0)||(+$('vibSlider').value>0)||SV.sel>=0;
+}
+function syncEstop(){
+ let on=lastDispensing||testEngaged();
+ $('estop').style.display=on?'block':'none';
+ document.body.classList.toggle('estop-on',on);
+}
+function doEstop(){
+ api('POST','/api/estop');
+ $('servoSlider').value=0;$('servoVal').textContent='0°';
+ $('vibSlider').value=0;$('vibVal').textContent='0%';
+ SV.sel=-1;for(let j=0;j<3;j++)$('sv'+j).classList.remove('on');
+ svRender();
+ lastDispensing=false;
+ syncEstop();
 }
 // --- Servo zero calibration. 15/70 mirror the firmware's backoff and
 // uncalibrated start angle (display only - close math is firmware-side).
@@ -389,7 +420,7 @@ function svPick(i){
  for(let j=0;j<3;j++)$('sv'+j).classList.toggle('on',j===i);
  let z=SV.zeros[i];
  SV.angle=z>=0?Math.max(0,Math.round(z)-SV_BACKOFF):SV_START;
- svSend();svRender();
+ svSend();svRender();syncEstop();
 }
 function svJog(d){
  if(SV.sel<0)return;
@@ -822,6 +853,8 @@ function poll(){
   buildDash(d);
   syncNames(d);
   if(d.szero){SV.zeros=d.szero;if(SV.sel>=0)svRender();}
+  lastDispensing=!!d.dispensing;
+  syncEstop();
 
   // Live graph while dispensing (or before any run is loaded)
   lastTgt=tgt;

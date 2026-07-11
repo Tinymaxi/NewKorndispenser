@@ -666,6 +666,29 @@ int main()
                 }
                 break;
 
+            case WebCommand::EStop:
+                // Emergency stop: works from ANY state, never asks questions.
+                printf("[estop] web emergency stop\n");
+                if (g_state.dispensing) {
+                    // Route through the Dispense screen's Running state (same
+                    // tick, drain runs before mgr.tick) - servo closes, PID
+                    // goes MANUAL, telemetry run ends cleanly
+                    ctx.web_stop_dispense = true;
+                } else {
+                    // Idle/test/jog: close and release everything
+                    for (int i = 0; i < 3; i++) {
+                        servos[i]->writeDegrees(servo_close(g_state, i));
+                    }
+                    sleep_ms(300);
+                    for (int i = 0; i < 3; i++) {
+                        servos[i]->off();
+                    }
+                }
+                for (int i = 0; i < 3; i++) {
+                    vibrators[i]->off();
+                }
+                break;
+
             case WebCommand::Calibrate:
                 // Blocks even longer than tare, and writes flash - not while
                 // a dispense is running

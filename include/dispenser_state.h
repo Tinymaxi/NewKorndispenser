@@ -17,6 +17,7 @@ enum class WebCommand : uint8_t {
     SetPID,
     SetName,
     SetServoZero,
+    EStop,
 };
 
 // One queued web command with its payload
