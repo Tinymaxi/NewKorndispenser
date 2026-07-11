@@ -210,6 +210,62 @@ int main()
 
     lcd.init(PICO_DEFAULT_I2C_SDA_PIN, PICO_DEFAULT_I2C_SCL_PIN, 100000);
 
+    // --- Network mode chooser --------------------------------------------
+    // Pick Home WiFi (STA, still falls back to the hotspot if it fails) or
+    // Hotspot (AP) with the encoder. Auto-continues with the remembered
+    // choice after 5 s, so unattended power cycles never wait on a person.
+    uint8_t net_mode = 0;  // 0 = Home WiFi, 1 = Hotspot
+    {
+        NetConfig ncfg;
+        if (load_net_config(ncfg)) net_mode = ncfg.mode;
+
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Network?");
+
+        int  sel = net_mode;
+        int  last_sel = -1, last_secs = -1;
+        int  last_pos = enc.getPosition();
+        bool was_pressed = enc.isPressed();  // ignore carry-over press
+        absolute_time_t deadline = make_timeout_time_ms(5000);
+
+        while (!time_reached(deadline)) {
+            int pos = enc.getPosition();
+            if (pos != last_pos) {
+                sel = (pos > last_pos) ? 1 : 0;  // two entries: turn down/up
+                last_pos = pos;
+                deadline = make_timeout_time_ms(5000);  // interaction resets timer
+            }
+            bool pressed = enc.isPressed();
+            if (pressed && !was_pressed) break;  // confirm immediately
+            was_pressed = pressed;
+
+            if (sel != last_sel) {
+                lcd.setCursor(1, 0);
+                lcd.print(sel == 0 ? "> Home WiFi    " : "  Home WiFi    ");
+                lcd.setCursor(2, 0);
+                lcd.print(sel == 1 ? "> Hotspot      " : "  Hotspot      ");
+                last_sel = sel;
+            }
+            int secs = (int)((absolute_time_diff_us(get_absolute_time(), deadline)
+                              + 999999) / 1000000);
+            if (secs != last_secs) {
+                char cdl[21];
+                std::snprintf(cdl, sizeof(cdl), "Auto in %ds  Press=OK", secs);
+                lcd.setCursor(3, 0);
+                lcd.print(cdl);
+                last_secs = secs;
+            }
+            sleep_ms(30);
+        }
+
+        if ((uint8_t)sel != net_mode) {
+            net_mode = (uint8_t)sel;
+            ncfg.mode = net_mode;
+            save_net_config(ncfg);  // remembered as next boot's default
+        }
+    }
+
     // --- WiFi initialization ---
     if (cyw43_arch_init()) {
         printf("[wifi] init failed\n");
@@ -220,8 +276,8 @@ int main()
     } else {
         net_stack_up = true;
 
-        // Holding the encoder button at boot skips STA and forces AP mode
-        bool force_ap = enc.isPressed();
+        // Hotspot chosen at the boot menu skips the STA attempts entirely
+        bool force_ap = (net_mode == 1);
 
         int wifi_err = -1;
         if (!force_ap) {
@@ -271,7 +327,7 @@ int main()
             if (!force_ap) printf("[wifi] all attempts failed: %d\n", wifi_err);
             lcd.clear();
             lcd.setCursor(0, 0);
-            lcd.print(force_ap ? "AP mode (forced)" : "WiFi failed - AP up");
+            lcd.print(force_ap ? "Hotspot mode" : "WiFi failed - AP up");
 
             if (start_ap_mode()) {
                 g_state.ap_mode = true;
@@ -463,6 +519,8 @@ int main()
 
             switch (c.cmd) {
             case WebCommand::Tare:
+                // tare blocks ~1.6 s - never stall the PID with the gate open
+                if (g_state.dispensing) break;
                 scales[ctx.selected_scale]->tare();
                 bz.playMarioCoin();
                 // Publish the tared reading immediately so the next status poll
@@ -585,6 +643,9 @@ int main()
                 break;
 
             case WebCommand::Calibrate:
+                // Blocks even longer than tare, and writes flash - not while
+                // a dispense is running
+                if (g_state.dispensing) break;
                 if (c.i0 > 0) {
                     scales[ctx.selected_scale]->calibrate_scale(
                         (float)c.i0, 10);

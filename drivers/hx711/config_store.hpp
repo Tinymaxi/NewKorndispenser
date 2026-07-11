@@ -53,6 +53,18 @@ struct ServoConfig {
 bool load_servo_config(ServoConfig& cfg);
 bool save_servo_config(const ServoConfig& cfg);
 
+// Network boot mode, persisted in the fifth-to-last flash sector. Chosen on
+// the LCD at boot (encoder); the last choice is the default for next boot.
+struct NetConfig {
+    uint32_t magic = 0x4E455431;   // "NET1"
+    uint8_t  mode = 0;             // 0 = home WiFi (STA), 1 = hotspot (AP)
+    uint8_t  pad[3] = {0};
+    uint32_t crc32 = 0;
+};
+
+bool load_net_config(NetConfig& cfg);
+bool save_net_config(const NetConfig& cfg);
+
 template <class HX711>
 inline void apply_scale_config(HX711& scale, const ScaleEntry& e) {
     scale.set_offset(e.offset_counts);
