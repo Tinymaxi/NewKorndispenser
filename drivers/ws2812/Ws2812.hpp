@@ -39,5 +39,7 @@ private:
     uint pin_    = 0;
     uint leds_   = 0;
 
-    std::vector<uint32_t> buf_; // 24‑bit GRB per LED (unshifted)
+    std::vector<uint32_t> buf_;  // 24‑bit GRB per LED (unshifted)
+    std::vector<uint32_t> last_; // last transmitted frame (skip-if-unchanged)
+    bool ever_shown_ = false;
 };

@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
+#include "hardware/sync.h"
 #include "ws2812.pio.h"
 
 Ws2812::Ws2812(uint pin, uint leds)
@@ -29,9 +30,19 @@ void Ws2812::clear() {
 }
 
 void Ws2812::show() {
-    // Write all LEDs (blocking), then latch
+    // Skip identical frames. Callers repaint every UI tick; retransmitting an
+    // unchanged frame only creates flicker windows.
+    if (ever_shown_ && buf_ == last_) return;
+
+    // Transmit atomically: an interrupt pausing the stream >50us mid-frame
+    // (e.g. WiFi/lwIP work while using the web app) makes the strip latch a
+    // partial frame - visible as flicker. 48 LEDs take ~1.5 ms.
+    uint32_t irq = save_and_disable_interrupts();
     for (uint i = 0; i < leds_; ++i) {
         pio_sm_put_blocking(pio_, sm_, buf_[i] << 8u);
     }
+    restore_interrupts(irq);
     sleep_us(80); // >50µs reset/latch
+    last_ = buf_;
+    ever_shown_ = true;
 }

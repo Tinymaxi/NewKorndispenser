@@ -27,7 +27,23 @@ body{font-family:"Helvetica Neue",Helvetica,-apple-system,Arial,sans-serif;
 .statusline .ap{color:var(--red);font-weight:600}
 section{padding:18px 0;border-bottom:1px solid var(--hair)}
 section h2{font-size:11px;font-weight:600;text-transform:uppercase;
- letter-spacing:.08em;color:var(--ink2);margin-bottom:12px}
+ letter-spacing:.08em;color:var(--ink2);margin-bottom:12px;
+ display:flex;justify-content:space-between;align-items:center;cursor:pointer;
+ -webkit-user-select:none;user-select:none}
+section.closed h2{margin-bottom:0}
+.chev{font-size:10px;color:var(--ink2);transition:transform .15s}
+section.closed .chev{transform:rotate(-90deg)}
+section.closed .sbody{display:none}
+.wheels{display:flex;gap:10px;justify-content:center;align-items:flex-end;margin:6px 0}
+.wcol{display:flex;flex-direction:column;align-items:center;border:1px solid var(--hair)}
+.wbtn{width:56px;height:42px;border:0;background:var(--bg);font-size:13px;
+ color:var(--ink);cursor:pointer;-webkit-appearance:none;border-radius:0;
+ touch-action:manipulation}
+.wbtn:active{background:var(--ink);color:var(--bg)}
+.wdig{font-size:30px;font-weight:700;padding:2px 0;width:56px;text-align:center;
+ font-variant-numeric:tabular-nums;border-top:1px solid var(--hair);
+ border-bottom:1px solid var(--hair)}
+.wunit{font-size:14px;color:var(--ink2);padding-bottom:14px}
 .scales{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--hair);
  border:1px solid var(--hair)}
 .scell{background:var(--bg);padding:10px 8px;text-align:center;cursor:pointer;
@@ -108,32 +124,39 @@ td.bad{color:var(--red)}
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
-<section>
-<h2>Scales</h2>
+<section id="sec-scales">
+<h2 onclick="toggleSec('sec-scales')">Scales<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div class="scales" id="scaleDash"></div>
+</div>
 </section>
 
-<section>
-<h2>Contents</h2>
+<section id="sec-contents">
+<h2 onclick="toggleSec('sec-contents')">Contents<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div id="contentsRows"></div>
+</div>
 </section>
 
-<section>
-<h2>Dispense</h2>
+<section id="sec-dispense">
+<h2 onclick="toggleSec('sec-dispense')">Dispense<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div class="bignum num" id="weight">&ndash;&ndash;<small> g</small></div>
 <div class="pbar"><div class="pfill" id="progress"></div></div>
 <div class="substatus num" id="dispStatus"></div>
-<div class="field"><label for="targetInput">Target &middot; grams</label>
-<input type="number" id="targetInput" value="100" min="1" max="9999" onchange="setTarget()"></div>
+<div class="lbl" style="text-align:center;margin-top:6px">Target &middot; grams</div>
+<div class="wheels" id="twheel"></div>
 <div class="row">
 <button class="btn" onclick="doTare()">Tare</button>
 <button class="btn btn-pri" id="btnStart" onclick="startDisp()">Start</button>
 <button class="btn btn-stop" id="btnStop" onclick="stopDisp()" style="display:none">Stop</button>
 </div>
+</div>
 </section>
 
-<section>
-<h2>Run Chart</h2>
+<section id="sec-chart">
+<h2 onclick="toggleSec('sec-chart')">Run Chart<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <canvas id="graph" height="180"></canvas>
 <div class="toggles" id="pidToggles">
 <span class="lbl">Show</span>
@@ -146,10 +169,12 @@ td.bad{color:var(--red)}
 <div class="row" id="dlRow" style="display:none">
 <a class="btn" href="/api/log.csv" download>Download CSV</a>
 </div>
+</div>
 </section>
 
-<section>
-<h2>PID</h2>
+<section id="sec-pid">
+<h2 onclick="toggleSec('sec-pid')">PID<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div class="pidgrid">
 <div class="field"><label for="pidKp">Kp</label><input type="number" id="pidKp" step="0.1" min="0"></div>
 <div class="field"><label for="pidKi">Ki</label><input type="number" id="pidKi" step="0.01" min="0"></div>
@@ -159,10 +184,12 @@ td.bad{color:var(--red)}
 <button class="btn btn-pri" onclick="applyPID()">Apply</button>
 </div>
 <div style="text-align:center;margin-top:8px"><span class="saved" id="pidSaved">Saved</span></div>
+</div>
 </section>
 
-<section>
-<h2>Test</h2>
+<section id="sec-test">
+<h2 onclick="toggleSec('sec-test')">Test<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div class="sliderrow"><span class="lbl">Servo</span>
 <input type="range" min="0" max="180" value="0" id="servoSlider" oninput="sendServo(this.value)">
 <span class="val num" id="servoVal">0&deg;</span></div>
@@ -172,23 +199,27 @@ td.bad{color:var(--red)}
 <div class="row">
 <button class="btn" onclick="testStop()">Stop All</button>
 </div>
+</div>
 </section>
 
-<section>
-<h2>Calibrate</h2>
+<section id="sec-cal">
+<h2 onclick="toggleSec('sec-cal')">Calibrate<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <div class="row" style="margin-top:0">
 <button class="btn" onclick="doTare()">1 &middot; Tare</button>
 </div>
-<div class="field"><label for="calWeight">Known weight &middot; grams</label>
-<input type="number" id="calWeight" value="1000" min="1" max="9999"></div>
+<div class="lbl" style="text-align:center;margin-top:6px">Known weight &middot; grams</div>
+<div class="wheels" id="cwheel"></div>
 <div class="row">
 <button class="btn btn-pri" onclick="doCal()">2 &middot; Calibrate</button>
 </div>
 <div class="empty" id="calStatus" style="text-align:center"></div>
+</div>
 </section>
 
-<section style="border-bottom:0">
-<h2>History</h2>
+<section id="sec-hist" style="border-bottom:0">
+<h2 onclick="toggleSec('sec-hist')">History<span class="chev">&#9662;</span></h2>
+<div class="sbody">
 <table id="histTable">
 <thead><tr><th>Time</th><th>Scale</th><th>Target</th><th>Actual</th><th>Acc</th></tr></thead>
 <tbody id="histBody"></tbody>
@@ -196,6 +227,7 @@ td.bad{color:var(--red)}
 <div class="empty" id="histEmpty">No dispenses recorded yet.</div>
 <div class="row">
 <button class="btn" onclick="clearHistory()">Clear History</button>
+</div>
 </div>
 </section>
 
@@ -226,6 +258,67 @@ let prevDone=false,prevDisp=false;
 let pidLoaded=false;
 let busy=false;
 
+// --- Collapsible sections (state remembered per device) ---
+const SEC_DEFAULT={'sec-scales':1,'sec-contents':0,'sec-dispense':1,'sec-chart':1,
+ 'sec-pid':0,'sec-test':0,'sec-cal':0,'sec-hist':0};
+let secOpen=Object.assign({},SEC_DEFAULT,JSON.parse(localStorage.getItem('kd_sec')||'{}'));
+function applySec(){
+ for(let k in SEC_DEFAULT){
+  let el=document.getElementById(k);
+  if(el)el.classList.toggle('closed',!secOpen[k]);
+ }
+}
+function toggleSec(id){
+ secOpen[id]=secOpen[id]?0:1;
+ localStorage.setItem('kd_sec',JSON.stringify(secOpen));
+ applySec();
+ if(id==='sec-chart'&&secOpen[id]){
+  initGraph();
+  if(R&&!prevDisp)drawRun();else drawLive(lastTgt);
+ }
+}
+
+// --- Digit wheels (Mainsail-style per-digit steppers) ---
+const WHEELS={};
+function mkWheel(id,val,cb){
+ WHEELS[id]={v:val,cb:cb,touched:0};
+ let html='';
+ for(let p=0;p<4;p++){
+  html+='<div class="wcol">'+
+   '<button class="wbtn" onclick="wSpin(\''+id+'\','+p+',1)">&#9650;</button>'+
+   '<div class="wdig num" id="'+id+p+'">0</div>'+
+   '<button class="wbtn" onclick="wSpin(\''+id+'\','+p+',-1)">&#9660;</button>'+
+   '</div>';
+ }
+ html+='<div class="wunit">g</div>';
+ $(id).innerHTML=html;
+ wRender(id);
+}
+function wRender(id){
+ let v=WHEELS[id].v;
+ $(id+'0').textContent=(v/1000|0)%10;
+ $(id+'1').textContent=(v/100|0)%10;
+ $(id+'2').textContent=(v/10|0)%10;
+ $(id+'3').textContent=v%10;
+}
+function wSpin(id,place,dir){
+ let W=WHEELS[id];
+ let mult=[1000,100,10,1][place];
+ let digit=(W.v/mult|0)%10;
+ let nd=(digit+dir+10)%10;
+ W.v+=(nd-digit)*mult;
+ if(W.v<1)W.v=1;
+ W.touched=Date.now();
+ wRender(id);
+ if(W.cb)W.cb(W.v);
+}
+// Sync from server unless the user touched the wheel in the last 3 s
+function wSet(id,v){
+ let W=WHEELS[id];
+ if(!W||Date.now()-W.touched<3000)return;
+ if(W.v!==v){W.v=v;wRender(id);}
+}
+
 function api(method,url,body){
  busy=true;
  let c=new AbortController();
@@ -240,14 +333,12 @@ function selScale(i){
  $('statusText').textContent='SWITCHING TO SCALE '+(i+1)+'…';
  api('POST','/api/select-scale',{scale:i});
 }
-function setTarget(){
- let v=parseInt($('targetInput').value)||100;
- if(v<1)v=1;if(v>9999)v=9999;
- $('targetInput').value=v;
- api('POST','/api/target',{target:v});
-}
+function setTarget(v){api('POST','/api/target',{target:v});}
 function doTare(){api('POST','/api/tare');}
-function startDisp(){setTarget();api('POST','/api/dispense',{action:'start'});}
+function startDisp(){
+ setTarget(WHEELS.twheel.v);
+ api('POST','/api/dispense',{action:'start'});
+}
 function stopDisp(){api('POST','/api/dispense',{action:'stop'});}
 function sendServo(v){
  $('servoVal').textContent=v+'°';
@@ -263,7 +354,7 @@ function testStop(){
  api('POST','/api/test/stop');
 }
 function doCal(){
- let w=parseInt($('calWeight').value)||1000;
+ let w=WHEELS.cwheel.v||1000;
  api('POST','/api/calibrate',{weight:w});
  $('calStatus').textContent='Calibrating…';
  setTimeout(()=>$('calStatus').textContent='Done.',2000);
@@ -639,8 +730,7 @@ function poll(){
   $('btnStart').style.display=d.dispensing?'none':'block';
   $('btnStop').style.display=d.dispensing?'block':'none';
 
-  if(document.activeElement!==$('targetInput'))
-   $('targetInput').value=tgt;
+  wSet('twheel',tgt);
 
   // Masthead status
   let cal=d.scale_calibrated[d.selected_scale];
@@ -707,6 +797,13 @@ function poll(){
  });
 }
 
+applySec();
+let tgtTimer=null;
+mkWheel('twheel',100,v=>{
+ clearTimeout(tgtTimer);
+ tgtTimer=setTimeout(()=>setTarget(v),500);
+});
+mkWheel('cwheel',1000,null);
 initGraph();
 window.addEventListener('resize',()=>{
  initGraph();
