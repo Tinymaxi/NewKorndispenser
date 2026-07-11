@@ -437,6 +437,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             "\"dispensed_grams\":%.1f,"
             "\"scale_calibrated\":[%s,%s,%s],"
             "\"szero\":[%.0f,%.0f,%.0f],"
+            "\"ui\":%d,"
             "\"pid\":{\"kp\":%.3f,\"ki\":%.4f,\"kd\":%.3f},"
             "\"servo\":%.1f,\"vib\":%.2f,"
             "\"rssi\":%ld,"
@@ -456,6 +457,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             g_state->scale_calibrated[2] ? "true" : "false",
             (double)g_state->servo_zero[0], (double)g_state->servo_zero[1],
             (double)g_state->servo_zero[2],
+            KD_UI_VERSION,
             (double)g_state->pid_kp, (double)g_state->pid_ki, (double)g_state->pid_kd,
             (double)g_state->servo_angle, (double)g_state->vib_intensity,
             (long)rssi,

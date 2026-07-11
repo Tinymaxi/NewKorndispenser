@@ -1,11 +1,18 @@
 #ifndef _WEB_PAGE_H
 #define _WEB_PAGE_H
 
+// Bump on every visible UI change, in all three places: this constant (sent
+// as "ui" in /api/status), the UI_V constant in the page script, and the
+// version tag in the masthead. The page compares UI_V against the status
+// field to detect a stale cached copy of itself.
+#define KD_UI_VERSION 4
+
 static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-store">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Korn">
@@ -130,8 +137,12 @@ body.estop-on{padding-bottom:64px}
 </head>
 <body>
 
+<div id="stale" style="display:none;background:var(--red);color:#fff;padding:10px 8px;
+ font-size:12px;font-weight:600;text-align:center;letter-spacing:.05em">
+OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the home-screen icon</div>
+
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v3</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v4</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -177,9 +188,6 @@ body.estop-on{padding-bottom:64px}
 <button class="tg" id="tgD" onclick="tgl('d')"><span class="dot" style="background:#008300"></span>D</button>
 </div>
 <div class="runmeta" id="runMeta"></div>
-<div class="row" id="dlRow" style="display:none">
-<a class="btn" href="/api/log.csv" download>Download CSV</a>
-</div>
 </div>
 </section>
 
@@ -255,11 +263,12 @@ body.estop-on{padding-bottom:64px}
 <h2 onclick="toggleSec('sec-hist')">History<span class="chev">&#9662;</span></h2>
 <div class="sbody">
 <table id="histTable">
-<thead><tr><th>Time</th><th>Scale</th><th>Target</th><th>Actual</th><th>Acc</th></tr></thead>
+<thead><tr><th>Time</th><th>Scale</th><th>Target</th><th>Actual</th><th>Acc</th><th></th></tr></thead>
 <tbody id="histBody"></tbody>
 </table>
 <div class="empty" id="histEmpty">No dispenses recorded yet.</div>
 <div class="row">
+<button class="btn btn-pri" id="dlAllBtn" onclick="dlAllRuns()">Download All Runs</button>
 <button class="btn" onclick="clearHistory()">Clear History</button>
 </div>
 </div>
@@ -269,6 +278,7 @@ body.estop-on{padding-bottom:64px}
 
 <script>
 const $=id=>document.getElementById(id);
+const UI_V=4; // must match KD_UI_VERSION + the masthead tag
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 // Series colors - validated categorical set (dispensed stays ink, setpoint red)
 const CSRV='#2a78d6',CBAG='#eda100',CVIB='#1baf7a',CP='#eb6834',CI='#4a3aa7',CD='#008300';
@@ -775,7 +785,7 @@ function loadRun(id){
    kp:meta.kp,ki:meta.ki,kd:meta.kd,final:meta.final_g,samples:data.t.length};
   lastRunLoaded=id;
   loadingRun=false;
-  $('dlRow').style.display='flex';
+  saveRunCsv(R.meta.run_id,txt);
   $('runMeta').textContent='RUN '+R.meta.run_id+' · SCALE '+R.meta.scale+
    (R.meta.name?' · '+String(R.meta.name).toUpperCase():'')+
    ' · '+R.meta.samples+' SAMPLES · KP '+R.meta.kp+' KI '+R.meta.ki+
@@ -784,9 +794,45 @@ function loadRun(id){
  }).catch(()=>{loadingRun=false;});
 }
 
+// --- Per-run CSV cache: the device only keeps the LATEST run in RAM, so
+// each finished run's CSV is stashed here (newest KEEP_CSV runs) and can be
+// downloaded from the History table long after the machine moved on.
+const KEEP_CSV=8;
+function csvIndex(){return JSON.parse(localStorage.getItem('kd_csvs')||'[]');}
+function saveRunCsv(id,txt){
+ try{
+  let idx=csvIndex().filter(x=>x!==id);
+  idx.push(id);
+  while(idx.length>KEEP_CSV)localStorage.removeItem('kd_csv_'+idx.shift());
+  localStorage.setItem('kd_csv_'+id,txt);
+  localStorage.setItem('kd_csvs',JSON.stringify(idx));
+ }catch(e){} // storage full - this run just won't offer a download
+ renderHistory();
+}
+function dlBlob(name,txt){
+ let a=document.createElement('a');
+ a.href=URL.createObjectURL(new Blob([txt],{type:'text/csv'}));
+ a.download=name;
+ document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+function dlRun(id){
+ let t=localStorage.getItem('kd_csv_'+id);
+ if(t)dlBlob('pid_run_'+id+'.csv',t);
+}
+function dlAllRuns(){
+ let out='';
+ for(let id of csvIndex()){
+  let t=localStorage.getItem('kd_csv_'+id);
+  if(t)out+=t.trim()+'\n\n';
+ }
+ if(out)dlBlob('korn_runs_all.csv',out);
+}
+
 // --- History ---
 function renderHistory(){
  let body=$('histBody');
+ $('dlAllBtn').style.display=csvIndex().length?'':'none';
  if(history.length===0){
   body.innerHTML='';
   $('histEmpty').style.display='block';
@@ -798,14 +844,18 @@ function renderHistory(){
   let e=history[i];
   let acc=(e.actual/e.target*100).toFixed(1);
   let bad=Math.abs(e.actual-e.target)>e.target*0.05;
+  let dl=(e.run&&localStorage.getItem('kd_csv_'+e.run))?
+   '<button class="tg" onclick="dlRun('+e.run+')">CSV</button>':'';
   html+='<tr><td>'+e.time+'</td><td>'+(e.name||e.scale)+'</td><td>'+e.target+' g</td><td>'+
-   e.actual.toFixed(1)+' g</td><td'+(bad?' class="bad"':'')+'>'+acc+'%</td></tr>';
+   e.actual.toFixed(1)+' g</td><td'+(bad?' class="bad"':'')+'>'+acc+'%</td><td>'+dl+'</td></tr>';
  }
  body.innerHTML=html;
 }
 function clearHistory(){
  history=[];
  localStorage.setItem('kd_history','[]');
+ for(let id of csvIndex())localStorage.removeItem('kd_csv_'+id);
+ localStorage.removeItem('kd_csvs');
  renderHistory();
 }
 
@@ -856,6 +906,19 @@ function poll(){
   lastDispensing=!!d.dispensing;
   syncEstop();
 
+  // Stale-page detector: firmware reports its bundled UI version; if this
+  // page is older, try one cache-busting reload, then warn visibly.
+  if(d.ui&&d.ui!==UI_V){
+   if(!sessionStorage.getItem('kd_rl')){
+    sessionStorage.setItem('kd_rl','1');
+    location.replace('/?r='+Date.now());
+    return;
+   }
+   $('stale').style.display='block';
+  }else if(d.ui){
+   sessionStorage.removeItem('kd_rl');
+  }
+
   // Live graph while dispensing (or before any run is loaded)
   lastTgt=tgt;
   G.buf.push(displayW);
@@ -885,10 +948,11 @@ function poll(){
    }
   }
 
-  // History entry on dispense completion
+  // History entry on dispense completion (run id links to the cached CSV)
   if(d.dispense_done&&!prevDone&&prevDisp){
    history.push({time:new Date().toLocaleTimeString(),scale:d.selected_scale+1,
-    name:(d.names&&d.names[d.selected_scale])||'',target:tgt,actual:disp});
+    name:(d.names&&d.names[d.selected_scale])||'',target:tgt,actual:disp,
+    run:(d.run&&d.run.id)||0});
    localStorage.setItem('kd_history',JSON.stringify(history));
    renderHistory();
   }
