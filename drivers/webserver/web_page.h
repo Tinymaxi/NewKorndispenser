@@ -31,7 +31,7 @@ section h2{font-size:11px;font-weight:600;text-transform:uppercase;
  display:flex;justify-content:space-between;align-items:center;cursor:pointer;
  -webkit-user-select:none;user-select:none}
 section.closed h2{margin-bottom:0}
-.chev{font-size:18px;line-height:1;color:var(--ink2);transition:transform .15s}
+.chev{font-size:24px;line-height:1;color:var(--ink2);transition:transform .15s}
 section.closed .chev{transform:rotate(-90deg)}
 section.closed .sbody{display:none}
 .wheels{display:flex;gap:10px;justify-content:center;align-items:flex-end;margin:6px 0}

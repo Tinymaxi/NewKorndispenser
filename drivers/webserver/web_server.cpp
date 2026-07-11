@@ -337,9 +337,12 @@ static void send_json_response(struct tcp_pcb* pcb, ConnState* cs, const char* j
 // Start a streamed large response (header + body via callbacks)
 static void start_streaming_response(struct tcp_pcb* pcb, ConnState* cs,
                                       const char* body, int body_len) {
+    // no-store: the page ships inside the firmware - a cached copy on the
+    // phone silently shows an outdated UI after every flash
     cs->resp_header_len = snprintf(cs->resp_header, sizeof(cs->resp_header),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
+        "Cache-Control: no-store\r\n"
         "Connection: close\r\n"
         "Content-Length: %d\r\n\r\n", body_len);
     cs->resp_body = body;
