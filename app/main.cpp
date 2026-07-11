@@ -226,19 +226,42 @@ int main()
         int  sel = net_mode;
         int  last_sel = -1, last_secs = -1;
         int  last_pos = enc.getPosition();
-        bool was_pressed = enc.isPressed();  // ignore carry-over press
         absolute_time_t deadline = make_timeout_time_ms(5000);
+
+        // Glitch protection: right after boot the button line can show a
+        // spurious edge and the encoder's stable-position filter settles with
+        // one jump - either instantly "confirmed" the menu. So: ignore
+        // position changes during a warm-up, arm the button only after it has
+        // read released continuously for 150 ms, and require two consecutive
+        // pressed reads (~60 ms) to confirm.
+        absolute_time_t warmup = make_timeout_time_ms(300);
+        absolute_time_t released_since = get_absolute_time();
+        bool armed = false;
+        int  press_reads = 0;
 
         while (!time_reached(deadline)) {
             int pos = enc.getPosition();
             if (pos != last_pos) {
-                sel = (pos > last_pos) ? 1 : 0;  // two entries: turn down/up
+                if (time_reached(warmup)) {
+                    sel = (pos > last_pos) ? 1 : 0;  // two entries: turn down/up
+                    deadline = make_timeout_time_ms(5000);  // interaction resets timer
+                }
                 last_pos = pos;
-                deadline = make_timeout_time_ms(5000);  // interaction resets timer
             }
-            bool pressed = enc.isPressed();
-            if (pressed && !was_pressed) break;  // confirm immediately
-            was_pressed = pressed;
+
+            if (enc.isPressed()) {
+                if (armed && ++press_reads >= 2) {
+                    printf("[net] chooser: confirmed by press\n");
+                    break;
+                }
+                released_since = get_absolute_time();  // not armed: keep waiting
+            } else {
+                press_reads = 0;
+                if (!armed &&
+                    absolute_time_diff_us(released_since, get_absolute_time()) >= 150000) {
+                    armed = true;
+                }
+            }
 
             if (sel != last_sel) {
                 lcd.setCursor(1, 0);
@@ -259,6 +282,7 @@ int main()
             sleep_ms(30);
         }
 
+        printf("[net] chooser result: %s\n", sel == 1 ? "Hotspot" : "Home WiFi");
         if ((uint8_t)sel != net_mode) {
             net_mode = (uint8_t)sel;
             ncfg.mode = net_mode;
