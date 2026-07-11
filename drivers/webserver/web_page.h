@@ -31,8 +31,12 @@ section h2{font-size:11px;font-weight:600;text-transform:uppercase;
  display:flex;justify-content:space-between;align-items:center;cursor:pointer;
  -webkit-user-select:none;user-select:none}
 section.closed h2{margin-bottom:0}
-.chev{font-size:24px;line-height:1;color:var(--ink2);transition:transform .15s}
-section.closed .chev{transform:rotate(-90deg)}
+/* Chevron drawn with borders, not a font glyph - the triangle characters
+   render tiny on iOS regardless of font-size. font-size:0 hides the entity. */
+.chev{font-size:0;width:14px;height:14px;flex:none;margin-right:5px;
+ border-right:3px solid var(--ink);border-bottom:3px solid var(--ink);
+ transform:rotate(45deg) translate(-3px,-3px);transition:transform .15s}
+section.closed .chev{transform:rotate(-45deg) translate(-3px,-3px)}
 section.closed .sbody{display:none}
 .wheels{display:flex;gap:10px;justify-content:center;align-items:flex-end;margin:6px 0}
 .wcol{display:flex;flex-direction:column;align-items:center;border:1px solid var(--hair)}
@@ -120,7 +124,7 @@ td.bad{color:var(--red)}
 <body>
 
 <header class="masthead">
-<h1>KORN DISPENSER</h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v2</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
