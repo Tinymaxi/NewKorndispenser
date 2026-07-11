@@ -27,11 +27,11 @@ body{font-family:"Helvetica Neue",Helvetica,-apple-system,Arial,sans-serif;
 .statusline .ap{color:var(--red);font-weight:600}
 section{padding:18px 0;border-bottom:1px solid var(--hair)}
 section h2{font-size:11px;font-weight:600;text-transform:uppercase;
- letter-spacing:.08em;color:var(--ink2);margin-bottom:12px;
+ letter-spacing:.08em;color:var(--ink2);margin-bottom:12px;padding:6px 0;
  display:flex;justify-content:space-between;align-items:center;cursor:pointer;
  -webkit-user-select:none;user-select:none}
 section.closed h2{margin-bottom:0}
-.chev{font-size:10px;color:var(--ink2);transition:transform .15s}
+.chev{font-size:18px;line-height:1;color:var(--ink2);transition:transform .15s}
 section.closed .chev{transform:rotate(-90deg)}
 section.closed .sbody{display:none}
 .wheels{display:flex;gap:10px;justify-content:center;align-items:flex-end;margin:6px 0}
@@ -202,6 +202,29 @@ td.bad{color:var(--red)}
 </div>
 </section>
 
+<section id="sec-servo">
+<h2 onclick="toggleSec('sec-servo')">Servo Zero<span class="chev">&#9662;</span></h2>
+<div class="sbody">
+<div class="toggles"><span class="lbl">Servo</span>
+<button class="tg" id="sv0" onclick="svPick(0)">1</button>
+<button class="tg" id="sv1" onclick="svPick(1)">2</button>
+<button class="tg" id="sv2" onclick="svPick(2)">3</button>
+</div>
+<div class="bignum num" id="svAngle">&ndash;</div>
+<div class="substatus num" id="svInfo">Pick a servo, jog until grain flows, set zero</div>
+<div class="row">
+<button class="btn" onclick="svJog(-5)">&minus;5</button>
+<button class="btn" onclick="svJog(-1)">&minus;1</button>
+<button class="btn" onclick="svJog(1)">+1</button>
+<button class="btn" onclick="svJog(5)">+5</button>
+</div>
+<div class="row">
+<button class="btn btn-pri" onclick="svSetZero()">Set Zero</button>
+<button class="btn" onclick="svClose()">Close</button>
+</div>
+</div>
+</section>
+
 <section id="sec-cal">
 <h2 onclick="toggleSec('sec-cal')">Calibrate<span class="chev">&#9662;</span></h2>
 <div class="sbody">
@@ -260,7 +283,7 @@ let busy=false;
 
 // --- Collapsible sections (state remembered per device) ---
 const SEC_DEFAULT={'sec-scales':1,'sec-contents':0,'sec-dispense':1,'sec-chart':1,
- 'sec-pid':0,'sec-test':0,'sec-cal':0,'sec-hist':0};
+ 'sec-pid':0,'sec-test':0,'sec-servo':0,'sec-cal':0,'sec-hist':0};
 let secOpen=Object.assign({},SEC_DEFAULT,JSON.parse(localStorage.getItem('kd_sec')||'{}'));
 function applySec(){
  for(let k in SEC_DEFAULT){
@@ -352,6 +375,48 @@ function testStop(){
  $('servoSlider').value=0;$('servoVal').textContent='0°';
  $('vibSlider').value=0;$('vibVal').textContent='0%';
  api('POST','/api/test/stop');
+}
+// --- Servo zero calibration. 15/70 mirror the firmware's backoff and
+// uncalibrated start angle (display only - close math is firmware-side).
+const SV_BACKOFF=15,SV_START=70;
+let SV={sel:-1,angle:0,zeros:[-1,-1,-1]};
+function svPick(i){
+ SV.sel=i;
+ for(let j=0;j<3;j++)$('sv'+j).classList.toggle('on',j===i);
+ let z=SV.zeros[i];
+ SV.angle=z>=0?Math.max(0,Math.round(z)-SV_BACKOFF):SV_START;
+ svSend();svRender();
+}
+function svJog(d){
+ if(SV.sel<0)return;
+ SV.angle=Math.min(180,Math.max(0,SV.angle+d));
+ svSend();svRender();
+}
+function svSend(){api('POST','/api/test/servo',{servo:SV.sel,angle:SV.angle});}
+function svSetZero(){
+ if(SV.sel<0)return;
+ api('POST','/api/servo/zero',{servo:SV.sel,angle:SV.angle});
+ SV.zeros[SV.sel]=SV.angle;                 // optimistic; status poll confirms
+ SV.angle=Math.max(0,SV.angle-SV_BACKOFF);  // firmware parks at zero-backoff
+ svRender();
+}
+function svClose(){
+ if(SV.sel<0)return;
+ api('POST','/api/test/servo',{servo:SV.sel,angle:-1});
+ let z=SV.zeros[SV.sel];
+ SV.angle=z>=0?Math.max(0,Math.round(z)-SV_BACKOFF):0;
+ svRender();
+}
+function svRender(){
+ $('svAngle').innerHTML=(SV.sel<0?'&ndash;':SV.angle+'<small>&deg;</small>');
+ if(SV.sel<0){$('svInfo').textContent='Pick a servo, jog until grain flows, set zero';return;}
+ let z=SV.zeros[SV.sel];
+ if(z>=0){
+  let rel=SV.angle-Math.round(z);
+  $('svInfo').textContent='zero '+Math.round(z)+'° · rel '+(rel>=0?'+':'')+rel+'°';
+ }else{
+  $('svInfo').textContent='zero not set';
+ }
 }
 function doCal(){
  let w=WHEELS.cwheel.v||1000;
@@ -752,6 +817,7 @@ function poll(){
 
   buildDash(d);
   syncNames(d);
+  if(d.szero){SV.zeros=d.szero;if(SV.sel>=0)svRender();}
 
   // Live graph while dispensing (or before any run is loaded)
   lastTgt=tgt;

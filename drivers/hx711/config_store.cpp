@@ -147,3 +147,48 @@ bool save_name_config(const NameConfig& cfg_in) {
     std::memcpy(&check, reinterpret_cast<const void*>(NAME_CFG_XIP_ADDR), sizeof(check));
     return (check.magic == tmp.magic) && (check.crc32 == tmp.crc32);
 }
+
+// ---- Per-servo zero angles (fourth-to-last sector) --------------------------
+
+static constexpr uint32_t SERVO_CFG_OFFSET   = (PICO_FLASH_SIZE_BYTES - 4 * CFG_SECTOR_SIZE);
+static constexpr uint32_t SERVO_CFG_XIP_ADDR = (XIP_BASE + SERVO_CFG_OFFSET);
+
+bool load_servo_config(ServoConfig& cfg) {
+    ServoConfig tmp{};
+    std::memcpy(&tmp, reinterpret_cast<const void*>(SERVO_CFG_XIP_ADDR), sizeof(tmp));
+
+    if (tmp.magic != 0x53525631) return false;
+
+    uint32_t expected = crc32_calc(&tmp, offsetof(ServoConfig, crc32));
+    if (expected != tmp.crc32) return false;
+
+    // Normalize per entry: anything outside 0-180 degrees (incl. NaN, which
+    // fails all comparisons) means "not calibrated" for that servo only
+    for (int i = 0; i < 3; i++) {
+        if (!(tmp.open_deg[i] >= 0.0f && tmp.open_deg[i] <= 180.0f)) {
+            tmp.open_deg[i] = -1.0f;
+        }
+    }
+
+    cfg = tmp;
+    return true;
+}
+
+bool save_servo_config(const ServoConfig& cfg_in) {
+    alignas(FLASH_PAGE_SIZE) static uint8_t sector_buf[CFG_SECTOR_SIZE];
+    std::memset(sector_buf, 0xFF, sizeof(sector_buf));
+
+    ServoConfig tmp = cfg_in;
+    tmp.magic = 0x53525631;
+    tmp.crc32 = crc32_calc(&tmp, offsetof(ServoConfig, crc32));
+    std::memcpy(sector_buf, &tmp, sizeof(tmp));
+
+    uint32_t irq_state = save_and_disable_interrupts();
+    flash_range_erase(SERVO_CFG_OFFSET, CFG_SECTOR_SIZE);
+    flash_range_program(SERVO_CFG_OFFSET, sector_buf, CFG_SECTOR_SIZE);
+    restore_interrupts(irq_state);
+
+    ServoConfig check{};
+    std::memcpy(&check, reinterpret_cast<const void*>(SERVO_CFG_XIP_ADDR), sizeof(check));
+    return (check.magic == tmp.magic) && (check.crc32 == tmp.crc32);
+}

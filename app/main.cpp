@@ -95,6 +95,18 @@ static void save_scale_names() {
     save_name_config(nc);
 }
 
+// Per-servo zero (flow-start) angles - mirrored in g_state.servo_zero and
+// persisted to flash. Same deferred-save rule as the PID gains and names.
+static bool servo_save_pending = false;
+
+static void save_servo_zeros() {
+    ServoConfig svc;
+    for (int i = 0; i < 3; i++) {
+        svc.open_deg[i] = g_state.servo_zero[i];
+    }
+    save_servo_config(svc);
+}
+
 // --- Access-point fallback ---------------------------------------------------
 // When the router is unreachable, the Pico broadcasts its own network so a phone
 // can join it directly and use the web app at http://192.168.4.1.
@@ -167,6 +179,17 @@ int main()
         }
     }
 
+    // Load persisted servo zero angles (before the startup close below, which
+    // parks each servo relative to its zero)
+    {
+        ServoConfig svc;
+        if (load_servo_config(svc)) {
+            for (int i = 0; i < 3; i++) {
+                g_state.servo_zero[i] = svc.open_deg[i];
+            }
+        }
+    }
+
     // Link servo1 + vib3 on shared PWM slice 3 before any servo/vibrator output, so
     // the slice frequency is arbitrated from the very first startup close below.
     servo1.attachShared(&slice3_pwm);
@@ -174,7 +197,7 @@ int main()
 
     // Close all servos at startup, then release (no holding torque)
     for (int i = 0; i < 3; i++) {
-        servos[i]->writeDegrees(0.0f);  // Closed position
+        servos[i]->writeDegrees(servo_close(g_state, i));
     }
     sleep_ms(500);  // Give servos time to reach position
     for (int i = 0; i < 3; i++) {
@@ -483,9 +506,21 @@ int main()
                 }
                 break;
 
-            case WebCommand::TestServo:
-                servos[ctx.selected_scale]->writeDegrees(c.f0);
+            case WebCommand::TestServo: {
+                // i0 = explicit servo index (calibration UI); -1 = legacy test
+                // slider, which follows the selected scale
+                int idx = (c.i0 >= 0 && c.i0 <= 2) ? c.i0 : ctx.selected_scale;
+                if (g_state.dispensing) break;  // never fight the PID loop
+                if (c.f0 < 0.0f) {
+                    // Close-and-release sentinel
+                    servos[idx]->writeDegrees(servo_close(g_state, idx));
+                    sleep_ms(300);
+                    servos[idx]->off();
+                } else {
+                    servos[idx]->writeDegrees(c.f0);  // driver clamps 0-180
+                }
                 break;
+            }
 
             case WebCommand::TestVibrator:
                 vibrators[ctx.selected_scale]->setIntensity(c.f0);
@@ -493,7 +528,7 @@ int main()
 
             case WebCommand::TestStop:
                 for (int i = 0; i < 3; i++) {
-                    servos[i]->writeDegrees(0.0f);
+                    servos[i]->writeDegrees(servo_close(g_state, i));
                     vibrators[i]->off();
                 }
                 sleep_ms(300);
@@ -531,6 +566,24 @@ int main()
                 }
                 break;
 
+            case WebCommand::SetServoZero:
+                if (c.i0 >= 0 && c.i0 <= 2 && c.f0 >= 0.0f && c.f0 <= 180.0f) {
+                    net_lock();
+                    g_state.servo_zero[c.i0] = c.f0;
+                    net_unlock();
+                    bz.playMarioCoin();
+                    if (!g_state.dispensing) {
+                        save_servo_zeros();
+                        // Park at the new closed position (zero - backoff)
+                        servos[c.i0]->writeDegrees(servo_close(g_state, c.i0));
+                        sleep_ms(300);
+                        servos[c.i0]->off();
+                    } else {
+                        servo_save_pending = true;
+                    }
+                }
+                break;
+
             case WebCommand::Calibrate:
                 if (c.i0 > 0) {
                     scales[ctx.selected_scale]->calibrate_scale(
@@ -561,6 +614,15 @@ int main()
             name_save_pending = false;
             save_scale_names();
         }
+        if (servo_save_pending && !g_state.dispensing) {
+            servo_save_pending = false;
+            save_servo_zeros();
+        }
+        // The LCD Servo Zero screen requests persistence through this flag
+        if (ctx.servo_zero_save_request && !g_state.dispensing) {
+            ctx.servo_zero_save_request = false;
+            save_servo_zeros();
+        }
 
         // When web is active, show status on LCD but skip all hardware input.
         // EXCEPTION: the Dispense screen must keep running - it owns the PID
@@ -568,8 +630,17 @@ int main()
         if (ctx.web_active && mgr.currentId() != ScreenId::Dispense) {
             static bool web_lcd_drawn = false;
 
-            // Encoder press (while idle) hands control back to the local UI
+            // Encoder press (while idle) hands control back to the local UI.
+            // Close + release all servos first: one may have been left jogged
+            // open from the phone (calibration/test) and must not stay open.
             if (enc.isPressed() && !g_state.dispensing) {
+                for (int i = 0; i < 3; i++) {
+                    servos[i]->writeDegrees(servo_close(g_state, i));
+                }
+                sleep_ms(300);
+                for (int i = 0; i < 3; i++) {
+                    servos[i]->off();
+                }
                 ctx.web_active = false;
                 web_lcd_drawn = false;
                 mgr.goTo(ctx, ScreenId::Menu);

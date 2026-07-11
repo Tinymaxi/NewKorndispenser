@@ -48,6 +48,12 @@ static void sanitize_name(char* s) {
 
 // ---------- helpers ----------------------------------------------------------
 
+static bool has_field(const char* body, const char* key) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    return strstr(body, search) != nullptr;
+}
+
 static int parse_int_field(const char* body, const char* key) {
     char search[64];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -427,6 +433,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             "\"dispense_done\":%s,"
             "\"dispensed_grams\":%.1f,"
             "\"scale_calibrated\":[%s,%s,%s],"
+            "\"szero\":[%.0f,%.0f,%.0f],"
             "\"pid\":{\"kp\":%.3f,\"ki\":%.4f,\"kd\":%.3f},"
             "\"servo\":%.1f,\"vib\":%.2f,"
             "\"rssi\":%ld,"
@@ -444,6 +451,8 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             g_state->scale_calibrated[0] ? "true" : "false",
             g_state->scale_calibrated[1] ? "true" : "false",
             g_state->scale_calibrated[2] ? "true" : "false",
+            (double)g_state->servo_zero[0], (double)g_state->servo_zero[1],
+            (double)g_state->servo_zero[2],
             (double)g_state->pid_kp, (double)g_state->pid_ki, (double)g_state->pid_kd,
             (double)g_state->servo_angle, (double)g_state->vib_intensity,
             (long)rssi,
@@ -494,7 +503,10 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
         }
 
         if (strcmp(path, "/api/test/servo") == 0) {
-            push_cmd(WebCommand::TestServo, 0, parse_float_field(body, "angle"));
+            // Optional "servo" field addresses a specific servo (calibration
+            // UI); without it the command follows the selected scale (-1)
+            int servo = has_field(body, "servo") ? parse_int_field(body, "servo") : -1;
+            push_cmd(WebCommand::TestServo, servo, parse_float_field(body, "angle"));
             send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
             return;
         }
@@ -522,6 +534,14 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
 
         if (strcmp(path, "/api/calibrate") == 0) {
             push_cmd(WebCommand::Calibrate, parse_int_field(body, "weight"));
+            send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
+            return;
+        }
+
+        if (strcmp(path, "/api/servo/zero") == 0) {
+            push_cmd(WebCommand::SetServoZero,
+                     parse_int_field(body, "servo"),
+                     parse_float_field(body, "angle"));
             send_and_close(pcb, cs, HTTP_204, strlen(HTTP_204));
             return;
         }

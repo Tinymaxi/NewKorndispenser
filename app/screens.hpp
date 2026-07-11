@@ -33,7 +33,8 @@ enum class ScreenId {
     Dispense,
     TestMenu,
     TestVibrator,
-    TestServo
+    TestServo,
+    ServoCal
 };
 
 // Everything a screen may touch: hardware, shared state, and the cross-screen
@@ -71,6 +72,7 @@ struct UiContext {
     bool web_start_dispense = false;  // web requested a dispense start
     bool web_stop_dispense  = false;  // web requested a dispense stop
     bool web_active         = false;  // web controls; local input mostly disabled
+    bool servo_zero_save_request = false;  // ServoCal saved a zero; main() persists
 };
 
 class Screen {

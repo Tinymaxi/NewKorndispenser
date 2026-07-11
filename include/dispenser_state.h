@@ -16,6 +16,7 @@ enum class WebCommand : uint8_t {
     Calibrate,
     SetPID,
     SetName,
+    SetServoZero,
 };
 
 // One queued web command with its payload
@@ -46,6 +47,8 @@ struct DispenserState {
     float servo_angle    = 0;              // Current servo angle (degrees)
     float vib_intensity  = 0;              // Current vibrator intensity (0-1)
     bool  ap_mode        = false;          // True when serving own AP instead of joining WiFi
+    float servo_zero[3]  = {-1, -1, -1};   // Calibrated flow-start angle per servo
+                                           // (degrees); < 0 = not calibrated
 
     // --- Command ring queue: web server (lwIP context) pushes at head, main loop
     // drains from tail under the lwIP lock. A queue (not a single slot) so commands
@@ -54,5 +57,34 @@ struct DispenserState {
     volatile uint8_t cmd_head = 0;   // next write slot (web server)
     volatile uint8_t cmd_tail = 0;   // next read slot (main loop)
 };
+
+// --- Servo working-range helpers -------------------------------------------
+// Each dispenser mechanism differs, so the angle where grain starts to flow is
+// calibrated per servo (servo_zero[], jogged + saved by the user). Servos
+// without a calibration keep the historical fixed values.
+
+inline constexpr float SERVO_CLOSE_BACKOFF_DEG = 15.0f;  // close this far below zero
+inline constexpr float SERVO_DEFAULT_MIN_OPEN  = 85.0f;  // uncalibrated PID floor
+inline constexpr float SERVO_FULL_OPEN         = 170.0f; // PID ceiling
+
+inline bool servo_zero_set(const DispenserState& s, int i) {
+    return s.servo_zero[i] >= 0.0f && s.servo_zero[i] <= 180.0f;
+}
+
+// PID lower output limit. Clamped below SERVO_FULL_OPEN because
+// PID::SetOutputLimits(min, max) silently ignores min >= max.
+inline float servo_min_open(const DispenserState& s, int i) {
+    if (!servo_zero_set(s, i)) return SERVO_DEFAULT_MIN_OPEN;
+    float z = s.servo_zero[i];
+    return z > SERVO_FULL_OPEN - 5.0f ? SERVO_FULL_OPEN - 5.0f : z;
+}
+
+// Physical closed position: just below the flow-start point instead of a full
+// sweep to 0 - faster, gentler closes. Uncalibrated: 0 (historical behavior).
+inline float servo_close(const DispenserState& s, int i) {
+    if (!servo_zero_set(s, i)) return 0.0f;
+    float c = s.servo_zero[i] - SERVO_CLOSE_BACKOFF_DEG;
+    return c < 0.0f ? 0.0f : c;
+}
 
 #endif // _DISPENSER_STATE_H

@@ -539,8 +539,8 @@ public:
 class DispenseScreen : public Screen {
     enum class DispenseState { Idle, Running, Done };
 
-    static constexpr float SERVO_MIN_OPEN = 85.0f;   // where hole starts opening
-    static constexpr float SERVO_OPEN     = 170.0f;  // fully open
+    // Servo working range comes from the per-servo zero calibration
+    // (servo_min_open / servo_close in dispenser_state.h)
 
     DispenseState state_ = DispenseState::Idle;
     int  option_ = 1;        // 0=Target, 1=Start, 2=Back (Idle) / 0=Back, 1=Retry (Done)
@@ -578,11 +578,11 @@ public:
         option_ = 1;  // Default to Start
         last_option_ = -1;
 
-        // Create PID if needed
+        // Create PID if needed (output limits are set per dispense start -
+        // they depend on which scale's servo runs)
         if (ctx.dispense_pid == nullptr) {
             ctx.dispense_pid = new PID(&pid_input_, &pid_output_, &pid_setpoint_,
                                        ctx.Kp, ctx.Ki, ctx.Kd, DIRECT);
-            ctx.dispense_pid->SetOutputLimits(SERVO_MIN_OPEN, SERVO_OPEN);
             // 100 ms matches the HX711's ~10 SPS so every PID compute sees a
             // genuinely new sample
             ctx.dispense_pid->SetSampleTime(100);
@@ -668,6 +668,12 @@ public:
                 start_weight_ = ctx.scales[ctx.selected_scale]->read_weight(3);
                 pid_setpoint_ = (double)ctx.target_grams;
                 pid_input_ = 0.0;
+                // Working range of THIS scale's servo (calibrated zero, or the
+                // 85-170 default). Set here, not in enter(): the web side can
+                // switch scales while this screen idles.
+                ctx.dispense_pid->SetOutputLimits(
+                    servo_min_open(ctx.g_state, ctx.selected_scale),
+                    SERVO_FULL_OPEN);
                 ctx.dispense_pid->SetMode(AUTOMATIC);
 
                 // Start telemetry capture (under lwIP lock so a CSV download
@@ -757,7 +763,8 @@ public:
             // Check if done (dispensed enough)
             if (dispensed_grams >= (float)ctx.target_grams) {
                 final_dispensed_ = dispensed_grams;
-                ctx.servos[ctx.selected_scale]->writeDegrees(0.0f);  // Close servo
+                float close_deg = servo_close(ctx.g_state, ctx.selected_scale);
+                ctx.servos[ctx.selected_scale]->writeDegrees(close_deg);
                 ctx.vibrators[ctx.selected_scale]->off();
                 ctx.dispense_pid->SetMode(MANUAL);
                 telem_end_run(final_dispensed_);
@@ -768,7 +775,7 @@ public:
                 ctx.g_state.dispensing = false;
                 ctx.g_state.dispense_done = true;
                 ctx.g_state.dispensed_grams = final_dispensed_;
-                ctx.g_state.servo_angle = 0.0f;
+                ctx.g_state.servo_angle = close_deg;
                 ctx.g_state.vib_intensity = 0.0f;
                 ctx.net_unlock();
                 ctx.bz.playCloseEncounters();  // Complete! (also gives servo time to close)
@@ -778,12 +785,13 @@ public:
             // Manual stop (encoder press or web STOP)
             if ((pressed && !was_pressed_) || ctx.web_stop_dispense) {
                 ctx.web_stop_dispense = false;
-                ctx.servos[ctx.selected_scale]->writeDegrees(0.0f);  // Close servo
+                float close_deg = servo_close(ctx.g_state, ctx.selected_scale);
+                ctx.servos[ctx.selected_scale]->writeDegrees(close_deg);
                 ctx.vibrators[ctx.selected_scale]->off();
                 ctx.dispense_pid->SetMode(MANUAL);
                 telem_end_run(dispensed_grams);
                 ctx.net_lock();
-                ctx.g_state.servo_angle = 0.0f;
+                ctx.g_state.servo_angle = close_deg;
                 ctx.g_state.vib_intensity = 0.0f;
                 ctx.g_state.dispensing = false;
                 ctx.net_unlock();
@@ -875,30 +883,31 @@ class TestMenuScreen : public Screen {
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
-        ctx.lcd.setCursor(0, 0);
-        ctx.lcd.print("Test Menu");
-        ctx.lcd.setCursor(1, 2);
+        ctx.lcd.setCursor(0, 2);
         ctx.lcd.print("Vibrators");
-        ctx.lcd.setCursor(2, 2);
+        ctx.lcd.setCursor(1, 2);
         ctx.lcd.print("Servos");
+        ctx.lcd.setCursor(2, 2);
+        ctx.lcd.print("Servo Zero");
         ctx.lcd.setCursor(3, 2);
         ctx.lcd.print("Back");
-        indicatorArrow(ctx.lcd, 0, 1, 3);
+        indicatorArrow(ctx.lcd, 0, 0, 4);
         last_selected_ = 0;
     }
 
     ScreenId update(UiContext& ctx) override {
         int pos = ctx.enc.getPosition();
-        int selected = ((pos % 3) + 3) % 3;
+        int selected = ((pos % 4) + 4) % 4;
 
         if (selected != last_selected_) {
-            indicatorArrow(ctx.lcd, selected, 1, 3);
+            indicatorArrow(ctx.lcd, selected, 0, 4);
             last_selected_ = selected;
         }
 
         if (ctx.enc.isPressed()) {
             if (selected == 0) return ScreenId::TestVibrator;
             if (selected == 1) return ScreenId::TestServo;
+            if (selected == 2) return ScreenId::ServoCal;
             return ScreenId::Menu;
         }
         return ScreenId::TestMenu;
@@ -1028,11 +1037,11 @@ public:
         last_encoder_pos_ = ctx.enc.getPosition();
         was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
         selected_ = 0;
-        angle_ = 0;  // Start at closed position
+        angle_ = 0;
         adjusting_ = false;
         // Close all servos
         for (int i = 0; i < 3; i++) {
-            ctx.servos[i]->writeDegrees(0.0f);
+            ctx.servos[i]->writeDegrees(servo_close(ctx.g_state, i));
         }
     }
 
@@ -1054,7 +1063,11 @@ public:
             // Button exits angle mode
             if (pressed && !was_pressed_) {
                 adjusting_ = false;
-                ctx.servos[selected_]->writeDegrees(0.0f);  // Close when exiting
+                // Close, settle, release - off() also hands the shared PWM
+                // slice back so a later vibrator-3 test doesn't hum at 333 Hz
+                ctx.servos[selected_]->writeDegrees(servo_close(ctx.g_state, selected_));
+                sleep_ms(300);
+                ctx.servos[selected_]->off();
                 angle_ = 0;
             }
         } else {
@@ -1068,9 +1081,14 @@ public:
             if (pressed && !was_pressed_) {
                 if (selected_ < 3) {
                     adjusting_ = true;
-                    angle_ = 0;  // Start at closed
-                    ctx.servos[selected_]->writeDegrees(0.0f);
+                    // Start at the servo's closed position
+                    angle_ = (int)servo_close(ctx.g_state, selected_);
+                    ctx.servos[selected_]->writeDegrees((float)angle_);
                 } else {
+                    // Leaving: release all servos (closed since enter())
+                    for (int i = 0; i < 3; i++) {
+                        ctx.servos[i]->off();
+                    }
                     next = ScreenId::TestMenu;
                 }
             }
@@ -1114,6 +1132,206 @@ public:
     }
 };
 
+// -------------------------------------------------------------- ServoCal ----
+// Calibrate each servo's "zero": jog the arm in 1-degree steps until grain
+// just starts to flow, then save that angle. The zero becomes the PID's lower
+// output limit and closing backs off SERVO_CLOSE_BACKOFF_DEG below it.
+
+class ServoCalScreen : public Screen {
+    enum class Phase { Select, Jog, Confirm };
+
+    // Uncalibrated jog start: safely below the default flow region (85 deg),
+    // so the gate never jump-opens onto the grain
+    static constexpr int SERVO_CAL_START_UNCAL = 70;
+
+    Phase phase_ = Phase::Select;
+    int  selected_ = 0;      // 0-2 servo, 3 = Back
+    int  angle_ = 0;         // current jog angle (degrees)
+    int  option_ = 0;        // Confirm: 0=Save 1=Resume 2=Exit
+    int  last_encoder_pos_ = 0;
+    bool was_pressed_ = false;
+    int  last_drawn_ = -1;   // change detector for the variable row
+
+    static void closeAndRelease(UiContext& ctx, int i) {
+        ctx.servos[i]->writeDegrees(servo_close(ctx.g_state, i));
+        sleep_ms(300);
+        ctx.servos[i]->off();
+    }
+
+    void drawSelect(UiContext& ctx) {
+        char line[21];
+        if (servo_zero_set(ctx.g_state, selected_ < 3 ? selected_ : 0) && selected_ < 3) {
+            std::snprintf(line, sizeof(line), "Zero: %d deg        ",
+                          (int)(ctx.g_state.servo_zero[selected_] + 0.5f));
+        } else {
+            std::snprintf(line, sizeof(line), "Zero: not set       ");
+        }
+        ctx.lcd.setCursor(1, 0);
+        ctx.lcd.print(selected_ < 3 ? line : "                    ");
+        std::snprintf(line, sizeof(line), "%s1%s %s2%s %s3%s %sBack%s      ",
+            selected_ == 0 ? "[" : " ", selected_ == 0 ? "]" : " ",
+            selected_ == 1 ? "[" : " ", selected_ == 1 ? "]" : " ",
+            selected_ == 2 ? "[" : " ", selected_ == 2 ? "]" : " ",
+            selected_ == 3 ? "[" : " ", selected_ == 3 ? "]" : " ");
+        ctx.lcd.setCursor(2, 0);
+        ctx.lcd.print(line);
+        ctx.lcd.setCursor(3, 0);
+        ctx.lcd.print("Press to adjust     ");
+    }
+
+public:
+    void enter(UiContext& ctx) override {
+        ctx.lcd.clear();
+        ctx.lcd.setCursor(0, 0);
+        ctx.lcd.print("Servo Zero");
+
+        last_encoder_pos_ = ctx.enc.getPosition();
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
+        phase_ = Phase::Select;
+        selected_ = 0;
+        last_drawn_ = -1;
+        // Park all servos at their closed positions
+        for (int i = 0; i < 3; i++) {
+            ctx.servos[i]->writeDegrees(servo_close(ctx.g_state, i));
+        }
+        drawSelect(ctx);
+    }
+
+    ScreenId update(UiContext& ctx) override {
+        int pos = ctx.enc.getPosition();
+        int delta = pos - last_encoder_pos_;
+        bool pressed = ctx.enc.isPressed();
+        bool click = pressed && !was_pressed_;
+        was_pressed_ = pressed;
+        ScreenId next = ScreenId::ServoCal;
+        char line[21];
+
+        switch (phase_) {
+        case Phase::Select:
+            if (delta != 0) {
+                selected_ += delta;
+                if (selected_ < 0) selected_ = 0;
+                if (selected_ > 3) selected_ = 3;
+                last_encoder_pos_ = pos;
+                drawSelect(ctx);
+            }
+            if (click) {
+                if (selected_ < 3) {
+                    angle_ = servo_zero_set(ctx.g_state, selected_)
+                                 ? (int)servo_close(ctx.g_state, selected_)
+                                 : SERVO_CAL_START_UNCAL;
+                    ctx.servos[selected_]->writeDegrees((float)angle_);
+                    phase_ = Phase::Jog;
+                    last_drawn_ = -1;
+                    ctx.lcd.setCursor(2, 0);
+                    ctx.lcd.print("Turn: 1 deg steps   ");
+                    ctx.lcd.setCursor(3, 0);
+                    ctx.lcd.print("Press when flowing  ");
+                } else {
+                    for (int i = 0; i < 3; i++) {
+                        ctx.servos[i]->off();
+                    }
+                    next = ScreenId::TestMenu;
+                }
+            }
+            // 7-seg shows the highlighted servo number
+            ctx.sevenSeg->clear();
+            ctx.sevenSeg->printNumber(selected_ < 3 ? selected_ + 1 : 0, 0, 255, 0);
+            ctx.sevenSeg->show();
+            break;
+
+        case Phase::Jog:
+            if (delta != 0) {
+                angle_ += delta;  // 1 degree per detent for fine calibration
+                if (angle_ < 0) angle_ = 0;
+                if (angle_ > 180) angle_ = 180;
+                last_encoder_pos_ = pos;
+                ctx.servos[selected_]->writeDegrees((float)angle_);
+            }
+            if (angle_ != last_drawn_) {
+                if (servo_zero_set(ctx.g_state, selected_)) {
+                    int rel = angle_ - (int)(ctx.g_state.servo_zero[selected_] + 0.5f);
+                    std::snprintf(line, sizeof(line), "Angle: %3d  Rel:%+4d", angle_, rel);
+                } else {
+                    std::snprintf(line, sizeof(line), "Angle: %3d          ", angle_);
+                }
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print(line);
+                last_drawn_ = angle_;
+            }
+            if (click) {
+                phase_ = Phase::Confirm;
+                option_ = 0;
+                last_drawn_ = -1;
+                std::snprintf(line, sizeof(line), "Set zero at %d?     ", angle_);
+                ctx.lcd.setCursor(2, 0);
+                ctx.lcd.print(line);
+            }
+            // 7-seg mirrors the angle (red at 0, green at 90, blue at 180)
+            {
+                uint8_t r = angle_ < 90 ? (90 - angle_) * 2 : 0;
+                uint8_t g = 255 - abs(angle_ - 90) * 2;
+                uint8_t b = angle_ > 90 ? (angle_ - 90) * 2 : 0;
+                ctx.sevenSeg->clear();
+                ctx.sevenSeg->printNumber(angle_, r, g, b);
+                ctx.sevenSeg->show();
+            }
+            break;
+
+        case Phase::Confirm:
+            if (delta != 0) {
+                option_ += delta;
+                if (option_ < 0) option_ = 0;
+                if (option_ > 2) option_ = 2;
+                last_encoder_pos_ = pos;
+            }
+            if (option_ != last_drawn_) {
+                std::snprintf(line, sizeof(line), "%sSave%s %sResume%s %sExit%s ",
+                    option_ == 0 ? "[" : " ", option_ == 0 ? "]" : " ",
+                    option_ == 1 ? "[" : " ", option_ == 1 ? "]" : " ",
+                    option_ == 2 ? "[" : " ", option_ == 2 ? "]" : " ");
+                ctx.lcd.setCursor(3, 0);
+                ctx.lcd.print(line);
+                last_drawn_ = option_;
+            }
+            if (click) {
+                if (option_ == 0) {
+                    // Save: RAM under the lwIP lock (web reads it), flash via
+                    // main loop (write stalls IRQs; main defers if dispensing)
+                    ctx.net_lock();
+                    ctx.g_state.servo_zero[selected_] = (float)angle_;
+                    ctx.net_unlock();
+                    ctx.servo_zero_save_request = true;
+                    ctx.bz.playMarioCoin();
+                    closeAndRelease(ctx, selected_);
+                    phase_ = Phase::Select;
+                } else if (option_ == 1) {
+                    // Resume jogging (servo untouched)
+                    phase_ = Phase::Jog;
+                    ctx.lcd.setCursor(2, 0);
+                    ctx.lcd.print("Turn: 1 deg steps   ");
+                    ctx.lcd.setCursor(3, 0);
+                    ctx.lcd.print("Press when flowing  ");
+                } else {
+                    // Exit without saving
+                    closeAndRelease(ctx, selected_);
+                    phase_ = Phase::Select;
+                }
+                if (phase_ == Phase::Select) {
+                    ctx.lcd.setCursor(3, 0);
+                    ctx.lcd.print("                    ");
+                    drawSelect(ctx);
+                }
+                last_drawn_ = -1;
+            }
+            break;
+        }
+
+        sleep_ms(50);
+        return next;
+    }
+};
+
 // --------------------------------------------------------- ScreenManager ----
 
 static MenuScreen           s_menu;
@@ -1127,6 +1345,7 @@ static DispenseScreen       s_dispense;
 static TestMenuScreen       s_testMenu;
 static TestVibratorScreen   s_testVibrator;
 static TestServoScreen      s_testServo;
+static ServoCalScreen       s_servoCal;
 
 static Screen* screenFor(ScreenId id) {
     switch (id) {
@@ -1141,6 +1360,7 @@ static Screen* screenFor(ScreenId id) {
     case ScreenId::TestMenu:       return &s_testMenu;
     case ScreenId::TestVibrator:   return &s_testVibrator;
     case ScreenId::TestServo:      return &s_testServo;
+    case ScreenId::ServoCal:       return &s_servoCal;
     }
     return &s_menu;
 }

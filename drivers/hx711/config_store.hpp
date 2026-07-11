@@ -42,6 +42,17 @@ struct NameConfig {
 bool load_name_config(NameConfig& cfg);
 bool save_name_config(const NameConfig& cfg);
 
+// Per-servo flow-start ("zero") angle in degrees, persisted in the
+// fourth-to-last flash sector. open_deg < 0 = servo not calibrated.
+struct ServoConfig {
+    uint32_t magic = 0x53525631;   // "SRV1"
+    float open_deg[3] = {-1.0f, -1.0f, -1.0f};
+    uint32_t crc32 = 0;
+};
+
+bool load_servo_config(ServoConfig& cfg);
+bool save_servo_config(const ServoConfig& cfg);
+
 template <class HX711>
 inline void apply_scale_config(HX711& scale, const ScaleEntry& e) {
     scale.set_offset(e.offset_counts);
