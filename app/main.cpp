@@ -770,12 +770,15 @@ int main()
             std::snprintf(wline, sizeof(wline), "Target: %d g        ", ctx.target_grams);
             lcd.setCursor(2, 0);
             lcd.print(wline);
-            // WiFi signal strength
-            int32_t rssi = -100;
-            cyw43_wifi_get_rssi(&cyw43_state, &rssi);
             if (g_state.dispensing) {
                 std::snprintf(wline, sizeof(wline), "Dispensing: %d g    ", (int)(g_state.dispensed_grams + 0.5f));
+            } else if (g_state.ap_mode) {
+                // RSSI is meaningless as an access point - show where the
+                // app lives instead (\xA5 = centered dot in the HD44780 ROM)
+                std::snprintf(wline, sizeof(wline), "Hotspot\xA5 192.168.4.1");
             } else {
+                int32_t rssi = -100;
+                cyw43_wifi_get_rssi(&cyw43_state, &rssi);
                 std::snprintf(wline, sizeof(wline), "WiFi: %ld dBm %s", (long)rssi,
                     rssi > -50 ? "Great" : rssi > -65 ? "Good" : rssi > -75 ? "Fair" : "Weak");
             }
