@@ -22,7 +22,13 @@ Ws2812::Ws2812(uint pin, uint leds)
 }
 
 void Ws2812::setPixel(uint i, uint8_t r, uint8_t g, uint8_t b) {
-    if (i < leds_) buf_[i] = pack_grb(r, g, b);
+    if (i >= leds_) return;
+    if (brightness_ != 255) {
+        r = (uint8_t)((r * brightness_) >> 8);
+        g = (uint8_t)((g * brightness_) >> 8);
+        b = (uint8_t)((b * brightness_) >> 8);
+    }
+    buf_[i] = pack_grb(r, g, b);
 }
 
 void Ws2812::clear() {

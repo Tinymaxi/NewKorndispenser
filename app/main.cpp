@@ -377,6 +377,7 @@ int main()
 
     // Initialize 7-segment display after encoder to avoid PIO conflict
     sevenSegStrip = new Ws2812(SEVENSEG_PIN, SEVENSEG_LEDS);
+    sevenSegStrip->setBrightness(85);  // ~1/3 - full white was blinding
     sevenSeg = new SevenSeg(*sevenSegStrip, LAYOUT_6DIGITS);
 
     // --- 7-segment startup animation: random segments sweep left to right ---

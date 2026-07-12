@@ -22,6 +22,10 @@ public:
     void clear();
     void show();
 
+    // Global brightness for this strip, 0-255 (255 = full). Applied in
+    // setPixel, so callers keep passing full-range colors.
+    void setBrightness(uint8_t b) { brightness_ = b; }
+
     // (optional) getters
     uint length() const { return leds_; }
     uint pin() const { return pin_; }
@@ -42,4 +46,5 @@ private:
     std::vector<uint32_t> buf_;  // 24‑bit GRB per LED (unshifted)
     std::vector<uint32_t> last_; // last transmitted frame (skip-if-unchanged)
     bool ever_shown_ = false;
+    uint8_t brightness_ = 255;
 };
