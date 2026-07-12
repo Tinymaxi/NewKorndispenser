@@ -7,5 +7,8 @@ build
 # clangd index cache
 .cache/
 
+# large binary backups / disk images (too big for git; keep local only)
+*.img
+
 # real WiFi credentials (use wifi_secrets.h.example as template)
 include/wifi_secrets.h
