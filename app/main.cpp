@@ -375,16 +375,16 @@ int main()
 
     bz.playMacStartup(); // Mac-like startup chime
 
-    // Initialize 7-segment display after encoder to avoid PIO conflict
+    // Initialize 7-segment display after encoder to avoid PIO conflict.
+    // Full brightness for the boot animation; dimmed to ~1/3 after it.
     sevenSegStrip = new Ws2812(SEVENSEG_PIN, SEVENSEG_LEDS);
-    sevenSegStrip->setBrightness(85);  // ~1/3 - full white was blinding
     sevenSeg = new SevenSeg(*sevenSegStrip, LAYOUT_6DIGITS);
 
     // --- 7-segment startup animation: random segments sweep left to right ---
     {
         const uint8_t ORANGE_R = 255, ORANGE_G = 80, ORANGE_B = 0;
         const int SWEEP_DELAY_MS = 40;  // Speed of sweep
-        const int HOLD_MS = 300;        // Hold at end before clearing
+        const int HOLD_MS = 3300;       // Hold at end before clearing
 
         // Seed random with time
         srand(to_ms_since_boot(get_absolute_time()));
@@ -417,6 +417,9 @@ int main()
             sleep_ms(SWEEP_DELAY_MS / 2);
         }
     }
+
+    // Normal operation runs dimmed (~1/3) - full white was blinding
+    sevenSegStrip->setBrightness(85);
 
     bool isConfigured = false;
 

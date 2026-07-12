@@ -690,6 +690,14 @@ public:
                 ctx.dispense_pid->SetOutputLimits(
                     servo_min_open(ctx.g_state, ctx.selected_scale),
                     servo_max_open(ctx.g_state, ctx.selected_scale));
+                // Seed the output at the floor before enabling: SetMode's
+                // bumpless transfer latches the CURRENT output into the
+                // integrator, and with a tiny Ki a stale value from the last
+                // run never bleeds off - the gate then rides ~50 deg above
+                // the floor for the whole run (CSV runs 2-4: i_term 150-175).
+                // Seeded at the floor, the end-phase tapers to just above the
+                // flow-start point: angle = zero + Kp * grams_remaining.
+                pid_output_ = (double)servo_min_open(ctx.g_state, ctx.selected_scale);
                 ctx.dispense_pid->SetMode(AUTOMATIC);
 
                 // Start telemetry capture (under lwIP lock so a CSV download
@@ -725,9 +733,11 @@ public:
 
             float servo_angle = (float)pid_output_;
 
-            // Vibrator: only activate when <=30g remaining
+            // Vibrator: assist the tail of the run; starts early because
+            // the motor takes a moment to spin up
+            constexpr float VIB_ASSIST_REMAINING_G = 80.0f;
             float remaining = (float)ctx.target_grams - dispensed_grams;
-            if (remaining <= 30.0f) {
+            if (remaining <= VIB_ASSIST_REMAINING_G) {
                 ctx.vibrators[ctx.selected_scale]->setIntensity(0.6f);
             } else {
                 ctx.vibrators[ctx.selected_scale]->off();
@@ -747,7 +757,7 @@ public:
                 ts.p         = (float)ctx.dispense_pid->GetLastP();
                 ts.i         = (float)ctx.dispense_pid->GetLastI();
                 ts.d         = (float)ctx.dispense_pid->GetLastD();
-                ts.vib       = (remaining <= 30.0f) ? 0.6f : 0.0f;
+                ts.vib       = (remaining <= VIB_ASSIST_REMAINING_G) ? 0.6f : 0.0f;
                 telem_append(ts);
             }
 
@@ -755,7 +765,7 @@ public:
             ctx.net_lock();
             ctx.g_state.dispensed_grams = dispensed_grams;
             ctx.g_state.servo_angle = servo_angle;
-            ctx.g_state.vib_intensity = (remaining <= 30.0f) ? 0.6f : 0.0f;
+            ctx.g_state.vib_intensity = (remaining <= VIB_ASSIST_REMAINING_G) ? 0.6f : 0.0f;
             ctx.net_unlock();
 
             // Repaint only changed lines - LCD writes stall the control loop
