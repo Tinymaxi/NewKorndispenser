@@ -105,10 +105,13 @@ static const char HTTP_204[] =
     "Connection: close\r\n"
     "Access-Control-Allow-Origin: *\r\n\r\n";
 
+// A visible body: a bodyless 404 renders as a silent white page on iOS Safari
 static const char HTTP_404[] =
     "HTTP/1.1 404 Not Found\r\n"
     "Connection: close\r\n"
-    "Content-Length: 0\r\n\r\n";
+    "Content-Type: text/plain\r\n"
+    "Content-Length: 13\r\n\r\n"
+    "404 not found";
 
 static const char HTTP_OPTIONS[] =
     "HTTP/1.1 204 No Content\r\n"
@@ -398,6 +401,13 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
     char method[8] = {};
     char path[64] = {};
     sscanf(req, "%7s %63s", method, path);
+
+    // Route on the path alone: cache-busting loads like "/?r=1720..." (sent by
+    // the page's stale-copy detector) must serve the page, not 404 into a
+    // blank white screen.
+    if (char* q = strchr(path, '?')) {
+        *q = '\0';
+    }
 
     // CORS preflight
     if (strcmp(method, "OPTIONS") == 0) {
