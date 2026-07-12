@@ -559,6 +559,13 @@ class DispenseScreen : public Screen {
     float final_dispensed_ = 0.0f;   // Final amount dispensed (for Done display)
     uint32_t dispense_start_ms_ = 0; // For telemetry timestamps
 
+    // Done-confirmation: the tail readings wobble +-1.5 g (vibrator shakes the
+    // scale), so a single sample >= target is usually an upward noise spike -
+    // closing on it left the SETTLED weight 2-3 g under target. The reading
+    // must hold at/above target for this many consecutive fresh samples.
+    static constexpr int DONE_CONFIRM_SAMPLES = 3;
+    int done_streak_ = 0;
+
     // Last values painted on the LCD. Repainting only on change matters: even
     // with fast I2C a 16-char line costs ~9 ms, and unconditional repaints
     // every loop tick were the main reason the PID ran at ~200 ms instead of
@@ -712,6 +719,7 @@ public:
                 state_ = DispenseState::Running;
                 option_ = 0;
                 last_option_ = -1;
+                done_streak_ = 0;
                 resetLcdCache();
                 ctx.net_lock();
                 ctx.g_state.dispensing = true;
@@ -794,8 +802,20 @@ public:
             }
             ctx.sevenSeg->show();
 
-            // Check if done (dispensed enough)
-            if (dispensed_grams >= (float)ctx.target_grams) {
+            // Check if done: target must hold for DONE_CONFIRM_SAMPLES
+            // consecutive fresh samples (counted on pid_computed - the loop
+            // spins many times per 100 ms sample, and counting iterations
+            // would confirm on the same noisy reading). While confirming the
+            // PID rides the floor, so the gate trickles ~0.1-0.5 g more,
+            // biasing the settled result to target instead of 2-3 g under.
+            if (pid_computed) {
+                if (dispensed_grams >= (float)ctx.target_grams) {
+                    done_streak_++;
+                } else {
+                    done_streak_ = 0;
+                }
+            }
+            if (done_streak_ >= DONE_CONFIRM_SAMPLES) {
                 final_dispensed_ = dispensed_grams;
                 float close_deg = servo_close(ctx.g_state, ctx.selected_scale);
                 ctx.servos[ctx.selected_scale]->writeDegrees(close_deg);
