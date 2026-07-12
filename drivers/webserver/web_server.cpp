@@ -444,6 +444,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             "\"target_grams\":%d,"
             "\"dispensing\":%s,"
             "\"dispense_done\":%s,"
+            "\"stalled\":%s,"
             "\"dispensed_grams\":%.1f,"
             "\"scale_calibrated\":[%s,%s,%s],"
             "\"szero\":[%.0f,%.0f,%.0f],"
@@ -461,6 +462,7 @@ static void handle_request(struct tcp_pcb* pcb, ConnState* cs) {
             g_state->target_grams,
             g_state->dispensing ? "true" : "false",
             g_state->dispense_done ? "true" : "false",
+            g_state->stalled ? "true" : "false",
             g_state->dispensed_grams,
             g_state->scale_calibrated[0] ? "true" : "false",
             g_state->scale_calibrated[1] ? "true" : "false",
