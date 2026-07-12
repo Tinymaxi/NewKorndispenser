@@ -50,8 +50,6 @@ struct DispenserState {
     bool  ap_mode        = false;          // True when serving own AP instead of joining WiFi
     float servo_zero[3]  = {-1, -1, -1};   // Calibrated flow-start angle per servo
                                            // (degrees); < 0 = not calibrated
-    bool  stalled        = false;          // Last dispense aborted: no flow
-                                           // (bag empty/blocked); cleared on next start
 
     // --- Command ring queue: web server (lwIP context) pushes at head, main loop
     // drains from tail under the lwIP lock. A queue (not a single slot) so commands

@@ -573,14 +573,6 @@ class DispenseScreen : public Screen {
     static constexpr float SERVO_SLEW_DEG_PER_SAMPLE = 10.0f;
     float servo_cmd_ = 0.0f;   // last commanded (slew-limited) angle
 
-    // Flow-stall alarm: if the dispensed amount hasn't grown by
-    // STALL_PROGRESS_G for STALL_TIMEOUT_MS mid-run, the bag is empty or
-    // blocked - close, alarm, and abort instead of pouring nothing forever.
-    static constexpr uint32_t STALL_TIMEOUT_MS = 6000;
-    static constexpr float    STALL_PROGRESS_G = 0.3f;
-    float    stall_ref_g_  = 0.0f;
-    uint32_t stall_ref_ms_ = 0;
-
     // Last values painted on the LCD. Repainting only on change matters: even
     // with fast I2C a 16-char line costs ~9 ms, and unconditional repaints
     // every loop tick were the main reason the PID ran at ~200 ms instead of
@@ -736,14 +728,11 @@ public:
                 last_option_ = -1;
                 done_streak_ = 0;
                 servo_cmd_ = servo_min_open(ctx.g_state, ctx.selected_scale);
-                stall_ref_g_ = 0.0f;
-                stall_ref_ms_ = dispense_start_ms_;
                 resetLcdCache();
                 ctx.net_lock();
                 ctx.g_state.dispensing = true;
                 ctx.g_state.dispense_done = false;
                 ctx.g_state.dispensed_grams = 0;
-                ctx.g_state.stalled = false;
                 ctx.net_unlock();
                 ctx.lcd.setCursor(3, 0);
                 ctx.lcd.print("   [Stop]           ");
@@ -862,47 +851,6 @@ public:
                 ctx.net_unlock();
                 ctx.bz.playCloseEncounters();  // Complete! (also gives servo time to close)
                 ctx.servos[ctx.selected_scale]->off();  // Release servo (no holding torque)
-            }
-
-            // Flow-stall alarm: no measurable progress for STALL_TIMEOUT_MS
-            // means the bag is empty or the gate is blocked - close and abort
-            // instead of sitting there with the gate open (run 11 in the field
-            // dispensed 30 g of 250 and then poured nothing until stopped).
-            if (pid_computed) {
-                uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-                if (dispensed_grams >= stall_ref_g_ + STALL_PROGRESS_G) {
-                    stall_ref_g_ = dispensed_grams;
-                    stall_ref_ms_ = now_ms;
-                } else if (now_ms - stall_ref_ms_ >= STALL_TIMEOUT_MS) {
-                    float close_deg = servo_close(ctx.g_state, ctx.selected_scale);
-                    ctx.servos[ctx.selected_scale]->writeDegrees(close_deg);
-                    ctx.vibrators[ctx.selected_scale]->off();
-                    ctx.dispense_pid->SetMode(MANUAL);
-                    telem_end_run(dispensed_grams);
-                    ctx.net_lock();
-                    ctx.g_state.dispensing = false;
-                    ctx.g_state.dispensed_grams = dispensed_grams;
-                    ctx.g_state.servo_angle = close_deg;
-                    ctx.g_state.vib_intensity = 0.0f;
-                    ctx.g_state.stalled = true;   // shown in the app until next start
-                    ctx.net_unlock();
-                    ctx.lcd.setCursor(2, 0);
-                    ctx.lcd.print("!! FLOW STALLED !!  ");
-                    ctx.lcd.setCursor(3, 0);
-                    ctx.lcd.print("Bag empty/blocked?  ");
-                    for (int i = 0; i < 3; i++) {
-                        ctx.bz.playTone(220, 180);
-                        sleep_ms(120);
-                    }
-                    sleep_ms(1200);  // message readable; servo settles closed
-                    ctx.servos[ctx.selected_scale]->off();
-                    final_dispensed_ = dispensed_grams;
-                    state_ = DispenseState::Done;
-                    option_ = 0;
-                    last_option_ = -1;
-                    resetLcdCache();
-                    break;
-                }
             }
 
             // Manual stop (encoder press or web STOP)

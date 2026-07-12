@@ -5,7 +5,7 @@
 // as "ui" in /api/status), the UI_V constant in the page script, and the
 // version tag in the masthead. The page compares UI_V against the status
 // field to detect a stale cached copy of itself.
-#define KD_UI_VERSION 6
+#define KD_UI_VERSION 7
 
 static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
@@ -143,7 +143,7 @@ body.estop-on{padding-bottom:64px}
 OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the home-screen icon</div>
 
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v6</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v7</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -279,7 +279,7 @@ OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the h
 
 <script>
 const $=id=>document.getElementById(id);
-const UI_V=6; // must match KD_UI_VERSION + the masthead tag
+const UI_V=7; // must match KD_UI_VERSION + the masthead tag
 const LOW_BAG_G=500; // bag weight below this renders red on the scale cards
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 // Series colors - validated categorical set (dispensed stays ink, setpoint red)
@@ -889,7 +889,6 @@ function poll(){
   // Masthead status
   let cal=d.scale_calibrated[d.selected_scale];
   let st=d.dispensing?'DISPENSING':(d.dispense_done?'COMPLETE':'READY');
-  if(d.stalled)st='<span class="ap">FLOW STALLED &middot; BAG EMPTY?</span>';
   let net;
   if(d.mode==='ap'){
    net='<span class="ap">AP MODE · 192.168.4.1</span>';
