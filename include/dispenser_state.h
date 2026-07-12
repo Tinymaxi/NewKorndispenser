@@ -66,18 +66,28 @@ struct DispenserState {
 
 inline constexpr float SERVO_CLOSE_BACKOFF_DEG = 15.0f;  // close this far below zero
 inline constexpr float SERVO_DEFAULT_MIN_OPEN  = 85.0f;  // uncalibrated PID floor
-inline constexpr float SERVO_FULL_OPEN         = 170.0f; // PID ceiling
+inline constexpr float SERVO_FULL_OPEN         = 170.0f; // uncalibrated PID ceiling
+// Usable travel above the zero: the arm hits a mechanical end stop ~75 deg past
+// the flow-start point; +5 deg of lean guarantees "fully open" is reached.
+inline constexpr float SERVO_OPEN_SPAN_DEG     = 80.0f;
 
 inline bool servo_zero_set(const DispenserState& s, int i) {
     return s.servo_zero[i] >= 0.0f && s.servo_zero[i] <= 180.0f;
 }
 
-// PID lower output limit. Clamped below SERVO_FULL_OPEN because
-// PID::SetOutputLimits(min, max) silently ignores min >= max.
+// PID lower output limit. Clamped to 175 so min < max always holds (see
+// servo_max_open) - PID::SetOutputLimits(min, max) silently ignores min >= max.
 inline float servo_min_open(const DispenserState& s, int i) {
     if (!servo_zero_set(s, i)) return SERVO_DEFAULT_MIN_OPEN;
     float z = s.servo_zero[i];
-    return z > SERVO_FULL_OPEN - 5.0f ? SERVO_FULL_OPEN - 5.0f : z;
+    return z > 175.0f ? 175.0f : z;
+}
+
+// PID upper output limit: zero + usable span, capped at the servo's 180 limit.
+inline float servo_max_open(const DispenserState& s, int i) {
+    if (!servo_zero_set(s, i)) return SERVO_FULL_OPEN;
+    float m = s.servo_zero[i] + SERVO_OPEN_SPAN_DEG;
+    return m > 180.0f ? 180.0f : m;
 }
 
 // Physical closed position: just below the flow-start point instead of a full

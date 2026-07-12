@@ -5,7 +5,7 @@
 // as "ui" in /api/status), the UI_V constant in the page script, and the
 // version tag in the masthead. The page compares UI_V against the status
 // field to detect a stale cached copy of itself.
-#define KD_UI_VERSION 4
+#define KD_UI_VERSION 5
 
 static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
@@ -64,6 +64,7 @@ section.closed .sbody{display:none}
 .scell .sn{font-size:11px;font-weight:600;margin-top:3px;letter-spacing:.02em;
  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scell .sw{font-size:20px;font-weight:700;margin:4px 0 2px}
+.scell .sw.low{color:var(--red)}
 .scell .sc{font-size:10px;letter-spacing:.05em;color:var(--ink2)}
 .scell .sc.no{color:var(--red)}
 .bignum{font-size:60px;font-weight:700;letter-spacing:-.02em;text-align:center;
@@ -142,7 +143,7 @@ body.estop-on{padding-bottom:64px}
 OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the home-screen icon</div>
 
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v4</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v5</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -278,7 +279,8 @@ OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the h
 
 <script>
 const $=id=>document.getElementById(id);
-const UI_V=4; // must match KD_UI_VERSION + the masthead tag
+const UI_V=5; // must match KD_UI_VERSION + the masthead tag
+const LOW_BAG_G=500; // bag weight below this renders red on the scale cards
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 // Series colors - validated categorical set (dispensed stays ink, setpoint red)
 const CSRV='#2a78d6',CBAG='#eda100',CVIB='#1baf7a',CP='#eb6834',CI='#4a3aa7',CD='#008300';
@@ -555,6 +557,8 @@ function buildDash(d){
   $('scn'+i).textContent=(d.names&&d.names[i])?d.names[i]:'\u2014';
   let g=d.gross?d.gross[i]:d.weights[i];   // cards show the bag's absolute weight
   $('scw'+i).textContent=g.toFixed(0)+' g';
+  // Red when the bag runs low (calibrated scales only - raw counts aren't grams)
+  $('scw'+i).classList.toggle('low',!!d.scale_calibrated[i]&&g<LOW_BAG_G);
   let ce=$('scc'+i),cal=d.scale_calibrated[i];
   ce.textContent=cal?'CAL':'NOT CAL';
   ce.className='sc'+(cal?'':' no');

@@ -559,6 +559,14 @@ class DispenseScreen : public Screen {
     float final_dispensed_ = 0.0f;   // Final amount dispensed (for Done display)
     uint32_t dispense_start_ms_ = 0; // For telemetry timestamps
 
+    // Last values painted on the LCD. Repainting only on change matters: even
+    // with fast I2C a 16-char line costs ~9 ms, and unconditional repaints
+    // every loop tick were the main reason the PID ran at ~200 ms instead of
+    // its 100 ms sample time.
+    int lcd_target_ = -1;
+    int lcd_value_  = -1;
+    void resetLcdCache() { lcd_target_ = -1; lcd_value_ = -1; }
+
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
@@ -577,6 +585,7 @@ public:
         state_ = DispenseState::Idle;
         option_ = 1;  // Default to Start
         last_option_ = -1;
+        resetLcdCache();
 
         // Create PID if needed (output limits are set per dispense start -
         // they depend on which scale's servo runs)
@@ -628,13 +637,19 @@ public:
             }
 
             char line[21];
-            std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
-            ctx.lcd.setCursor(1, 0);
-            ctx.lcd.print(line);
+            if (ctx.target_grams != lcd_target_) {
+                std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print(line);
+                lcd_target_ = ctx.target_grams;
+            }
             int display_current = (int)(current_grams + 0.5f);
-            std::snprintf(line, sizeof(line), "Current: %d g   ", display_current);
-            ctx.lcd.setCursor(2, 0);
-            ctx.lcd.print(line);
+            if (display_current != lcd_value_) {
+                std::snprintf(line, sizeof(line), "Current: %d g   ", display_current);
+                ctx.lcd.setCursor(2, 0);
+                ctx.lcd.print(line);
+                lcd_value_ = display_current;
+            }
 
             // 7-segment shows target
             ctx.sevenSeg->clear();
@@ -668,12 +683,13 @@ public:
                 start_weight_ = ctx.scales[ctx.selected_scale]->read_weight(3);
                 pid_setpoint_ = (double)ctx.target_grams;
                 pid_input_ = 0.0;
-                // Working range of THIS scale's servo (calibrated zero, or the
-                // 85-170 default). Set here, not in enter(): the web side can
+                // Working range of THIS scale's servo: calibrated zero up to
+                // zero + 80 deg (mechanical end stop ~75 deg past zero), or the
+                // 85-170 default. Set here, not in enter(): the web side can
                 // switch scales while this screen idles.
                 ctx.dispense_pid->SetOutputLimits(
                     servo_min_open(ctx.g_state, ctx.selected_scale),
-                    SERVO_FULL_OPEN);
+                    servo_max_open(ctx.g_state, ctx.selected_scale));
                 ctx.dispense_pid->SetMode(AUTOMATIC);
 
                 // Start telemetry capture (under lwIP lock so a CSV download
@@ -688,6 +704,7 @@ public:
                 state_ = DispenseState::Running;
                 option_ = 0;
                 last_option_ = -1;
+                resetLcdCache();
                 ctx.net_lock();
                 ctx.g_state.dispensing = true;
                 ctx.g_state.dispense_done = false;
@@ -741,13 +758,20 @@ public:
             ctx.g_state.vib_intensity = (remaining <= 30.0f) ? 0.6f : 0.0f;
             ctx.net_unlock();
 
+            // Repaint only changed lines - LCD writes stall the control loop
             char line[21];
-            std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
-            ctx.lcd.setCursor(1, 0);
-            ctx.lcd.print(line);
-            std::snprintf(line, sizeof(line), "Dispensing: %d g", display_dispensed);
-            ctx.lcd.setCursor(2, 0);
-            ctx.lcd.print(line);
+            if (ctx.target_grams != lcd_target_) {
+                std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print(line);
+                lcd_target_ = ctx.target_grams;
+            }
+            if (display_dispensed != lcd_value_) {
+                std::snprintf(line, sizeof(line), "Dispensing: %d g", display_dispensed);
+                ctx.lcd.setCursor(2, 0);
+                ctx.lcd.print(line);
+                lcd_value_ = display_dispensed;
+            }
 
             // 7-segment shows dispensed amount with color
             ctx.sevenSeg->clear();
@@ -771,6 +795,7 @@ public:
                 state_ = DispenseState::Done;
                 option_ = 0;
                 last_option_ = -1;
+                resetLcdCache();
                 ctx.net_lock();
                 ctx.g_state.dispensing = false;
                 ctx.g_state.dispense_done = true;
@@ -800,6 +825,7 @@ public:
                 state_ = DispenseState::Idle;
                 option_ = 1;
                 last_option_ = -1;
+                resetLcdCache();
             }
             break;
         }
@@ -830,12 +856,18 @@ public:
             if (display_live < 0) display_live = 0;
 
             char line[21];
-            std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
-            ctx.lcd.setCursor(1, 0);
-            ctx.lcd.print(line);
-            std::snprintf(line, sizeof(line), "Dispensed: %d g ", display_live);
-            ctx.lcd.setCursor(2, 0);
-            ctx.lcd.print(line);
+            if (ctx.target_grams != lcd_target_) {
+                std::snprintf(line, sizeof(line), "Target: %d g    ", ctx.target_grams);
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print(line);
+                lcd_target_ = ctx.target_grams;
+            }
+            if (display_live != lcd_value_) {
+                std::snprintf(line, sizeof(line), "Dispensed: %d g ", display_live);
+                ctx.lcd.setCursor(2, 0);
+                ctx.lcd.print(line);
+                lcd_value_ = display_live;
+            }
 
             // Color on 7-segment based on accuracy
             ctx.sevenSeg->clear();
@@ -852,6 +884,7 @@ public:
                 state_ = DispenseState::Idle;
                 option_ = 1;
                 last_option_ = -1;
+                resetLcdCache();
             }
 
             if (pressed && !was_pressed_) {
@@ -864,6 +897,7 @@ public:
                     state_ = DispenseState::Idle;
                     option_ = 1;
                     last_option_ = -1;
+                    resetLcdCache();
                 }
             }
             break;

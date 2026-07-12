@@ -101,13 +101,13 @@ void Lcd1602I2C::sendData(uint8_t v){
 }
 
 void Lcd1602I2C::pulseEnable(uint8_t bus) {
-    // Toggle EN with ~600 µs delays like the RPi code
-    constexpr uint32_t DELAY_US = 600;
-    sleep_us(DELAY_US);
+    // No explicit delays: each I2C byte at 100 kHz takes ~90 us on the wire,
+    // which already dwarfs the HD44780's EN pulse width (450 ns) and command
+    // execution time (37 us). The previous 3x600 us sleeps here made every
+    // character cost ~3.6 ms - a full LCD line stalled the control loop ~60 ms
+    // and halved the PID rate during dispensing.
     i2cWriteByte(bus | LCD_ENABLE);
-    sleep_us(DELAY_US);
     i2cWriteByte(bus & ~LCD_ENABLE);
-    sleep_us(DELAY_US);
 }
 
 void Lcd1602I2C::sendNibble(uint8_t nibbleUpper, bool rs) {
