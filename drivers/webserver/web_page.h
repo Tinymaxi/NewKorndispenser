@@ -5,13 +5,13 @@
 // as "ui" in /api/status), the UI_V constant in the page script, and the
 // version tag in the masthead. The page compares UI_V against the status
 // field to detect a stale cached copy of itself.
-#define KD_UI_VERSION 7
+#define KD_UI_VERSION 8
 
 static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-store">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -21,10 +21,17 @@ static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#fff;--ink:#111;--ink2:#666;--hair:#ddd;--red:#E30613}
+/* Lock the page horizontally: only vertical panning (touch-action), no
+   sideways rubber-band (overscroll), no stray-pixel horizontal scroll
+   (overflow). iOS otherwise pans the whole UI sideways once it has zoomed
+   in (e.g. auto-zoom on focusing a text field - hence maximum-scale=1). */
+html,body{overflow-x:hidden;overscroll-behavior-x:none;touch-action:pan-y}
 body{font-family:"Helvetica Neue",Helvetica,-apple-system,Arial,sans-serif;
  background:var(--bg);color:var(--ink);max-width:520px;margin:0 auto;
  padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));
  -webkit-tap-highlight-color:transparent}
+/* A slider drag belongs to the slider alone - never pans or scrolls the page */
+input[type=range]{touch-action:none}
 .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
 .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink2)}
 .masthead{padding-bottom:10px;border-bottom:2px solid var(--ink);margin-bottom:6px}
@@ -143,7 +150,7 @@ body.estop-on{padding-bottom:64px}
 OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the home-screen icon</div>
 
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v7</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v8</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -279,7 +286,7 @@ OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the h
 
 <script>
 const $=id=>document.getElementById(id);
-const UI_V=7; // must match KD_UI_VERSION + the masthead tag
+const UI_V=8; // must match KD_UI_VERSION + the masthead tag
 const LOW_BAG_G=500; // bag weight below this renders red on the scale cards
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 // Series colors - validated categorical set (dispensed stays ink, setpoint red)
