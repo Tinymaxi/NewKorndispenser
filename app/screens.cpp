@@ -27,7 +27,10 @@ static void indicatorArrow(Lcd1602I2C& lcd, int lineNumber, int startRow = 0, in
 // ---------------------------------------------------------------- Menu ------
 
 class MenuScreen : public Screen {
-    int last_selected_ = -1;
+    int  selected_ = 0;
+    int  last_selected_ = -1;
+    int  last_encoder_pos_ = 0;
+    bool was_pressed_ = false;
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
@@ -40,41 +43,61 @@ public:
         ctx.lcd.setCursor(3, 2);
         ctx.lcd.print("Test");
         indicatorArrow(ctx.lcd, 0, 0, 4);
+        selected_ = 0;
         last_selected_ = 0;
+        last_encoder_pos_ = ctx.enc.getPosition();
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
     }
 
     ScreenId update(UiContext& ctx) override {
-        // robust mod for negatives (4 menu items)
+        // Delta-driven selection, clamped (no wrap) - starting from the top
+        // regardless of the encoder's absolute position
         int pos = ctx.enc.getPosition();
-        int selected = ((pos % 4) + 4) % 4;
-
-        if (selected != last_selected_) {
-            indicatorArrow(ctx.lcd, selected, 0, 4);
-            last_selected_ = selected;
+        int delta = pos - last_encoder_pos_;
+        if (delta != 0) {
+            selected_ += delta;
+            if (selected_ < 0) selected_ = 0;
+            if (selected_ > 3) selected_ = 3;
+            last_encoder_pos_ = pos;
         }
 
-        if (ctx.enc.isPressed()) {
-            if (selected == 0) {
+        if (selected_ != last_selected_) {
+            indicatorArrow(ctx.lcd, selected_, 0, 4);
+            last_selected_ = selected_;
+        }
+
+        // Edge-triggered press: a button still held from the previous screen
+        // must NOT re-fire here (it used to cascade Menu -> flow instantly)
+        bool pressed = ctx.enc.isPressed();
+        ScreenId next = ScreenId::Menu;
+        if (pressed && !was_pressed_) {
+            if (selected_ == 0) {
                 ctx.after_select = ScreenId::Calibrate1;
-                return ScreenId::SelectScale;
-            } else if (selected == 1) {
+                next = ScreenId::SelectScale;
+            } else if (selected_ == 1) {
                 ctx.after_select = ScreenId::Dispense;
-                return ScreenId::SelectScale;
-            } else if (selected == 2) {
+                next = ScreenId::SelectScale;
+            } else if (selected_ == 2) {
                 ctx.after_select = ScreenId::Weigh;
-                return ScreenId::SelectScale;
+                next = ScreenId::SelectScale;
             } else {
-                return ScreenId::TestMenu;
+                next = ScreenId::TestMenu;
             }
         }
-        return ScreenId::Menu;
+        was_pressed_ = pressed;
+
+        sleep_ms(20);
+        return next;
     }
 };
 
 // ---------------------------------------------------------- SelectScale -----
 
 class SelectScaleScreen : public Screen {
-    int last_selected_ = -1;
+    int  selected_ = 0;
+    int  last_selected_ = -1;
+    int  last_encoder_pos_ = 0;
+    bool was_pressed_ = false;
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
@@ -91,23 +114,39 @@ public:
             ctx.lcd.print(row);
         }
         indicatorArrow(ctx.lcd, 0, 1, 3);  // Arrow on rows 1-3
+        selected_ = 0;
         last_selected_ = 0;
+        last_encoder_pos_ = ctx.enc.getPosition();
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
+        // (previously a still-held press from the Menu auto-picked a scale
+        // here before the user could turn the knob)
     }
 
     ScreenId update(UiContext& ctx) override {
         int pos = ctx.enc.getPosition();
-        int selected = ((pos % 3) + 3) % 3;
-
-        if (selected != last_selected_) {
-            indicatorArrow(ctx.lcd, selected, 1, 3);
-            last_selected_ = selected;
+        int delta = pos - last_encoder_pos_;
+        if (delta != 0) {
+            selected_ += delta;
+            if (selected_ < 0) selected_ = 0;
+            if (selected_ > 2) selected_ = 2;
+            last_encoder_pos_ = pos;
         }
 
-        if (ctx.enc.isPressed()) {
-            ctx.selected_scale = selected;   // 0, 1, or 2
-            return ctx.after_select;         // Calibrate1, Dispense or Weigh
+        if (selected_ != last_selected_) {
+            indicatorArrow(ctx.lcd, selected_, 1, 3);
+            last_selected_ = selected_;
         }
-        return ScreenId::SelectScale;
+
+        bool pressed = ctx.enc.isPressed();
+        ScreenId next = ScreenId::SelectScale;
+        if (pressed && !was_pressed_) {
+            ctx.selected_scale = selected_;  // 0, 1, or 2
+            next = ctx.after_select;         // Calibrate1, Dispense or Weigh
+        }
+        was_pressed_ = pressed;
+
+        sleep_ms(20);
+        return next;
     }
 };
 
@@ -160,9 +199,14 @@ public:
         bool pressed = ctx.enc.isPressed();
         if (pressed && !was_pressed_) {
             if (option_ == 0) {
-                // Tare and continue
+                // Tare and continue (visible feedback - tare blocks ~1.6 s)
+                ctx.lcd.setCursor(3, 0);
+                ctx.lcd.print("   Zeroing...       ");
                 ctx.scales[ctx.selected_scale]->tare();
+                ctx.lcd.setCursor(3, 0);
+                ctx.lcd.print("   Zeroed!          ");
                 ctx.bz.playMarioCoin();  // Bling!
+                sleep_ms(700);
                 was_pressed_ = pressed;
                 return ScreenId::Calibrate2;
             } else {
@@ -295,7 +339,8 @@ public:
 // (Not currently reachable from any menu - kept for completeness)
 
 class SetTargetScreen : public Screen {
-    int last_encoder_pos_ = 0;
+    int  last_encoder_pos_ = 0;
+    bool was_pressed_ = false;
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
@@ -307,6 +352,7 @@ public:
         ctx.lcd.print("Press to confirm");
 
         last_encoder_pos_ = ctx.enc.getPosition();
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
     }
 
     ScreenId update(UiContext& ctx) override {
@@ -328,9 +374,12 @@ public:
         ctx.lcd.setCursor(3, 0);
         ctx.lcd.print(line);
 
-        if (ctx.enc.isPressed()) {
+        bool pressed = ctx.enc.isPressed();
+        if (pressed && !was_pressed_) {
+            was_pressed_ = pressed;
             return ScreenId::Weigh;
         }
+        was_pressed_ = pressed;
 
         sleep_ms(50);
         return ScreenId::SetTarget;
@@ -359,7 +408,7 @@ public:
         digits_[2] = (ctx.target_grams / 10) % 10;
         digits_[3] = ctx.target_grams % 10;
         last_encoder_pos_ = ctx.enc.getPosition();
-        was_pressed_ = false;
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
         cursor_pos_ = 0;
         edit_mode_ = false;
     }
@@ -463,7 +512,7 @@ public:
         ctx.lcd.print(title);
 
         last_encoder_pos_ = ctx.enc.getPosition();
-        was_pressed_ = false;
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
         option_ = 0;
         last_option_ = -1;
     }
@@ -516,9 +565,15 @@ public:
         ScreenId next = ScreenId::Weigh;
         if (pressed && !was_pressed_) {
             if (option_ == 0) {
-                // Tare - zero the scale
+                // Tare - zero the scale, with visible before/after feedback
+                // (tare blocks ~1.6 s; without a message the screen just freezes)
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print("Zeroing...          ");
                 ctx.scales[ctx.selected_scale]->tare();
+                ctx.lcd.setCursor(1, 0);
+                ctx.lcd.print("Zeroed!             ");
                 ctx.bz.playMarioCoin();  // Bling!
+                sleep_ms(700);  // message readable; weight repaints next tick
             } else if (option_ == 1) {
                 // Target - go to digit entry, come back here
                 ctx.after_target = ScreenId::Weigh;
@@ -939,9 +994,14 @@ public:
                 if (option_ == 0) {
                     next = ScreenId::Menu;
                 } else {
-                    // Retry - tare and restart
+                    // Retry - tare and restart (visible feedback while blocked)
+                    ctx.lcd.setCursor(2, 0);
+                    ctx.lcd.print("Zeroing...          ");
                     ctx.scales[ctx.selected_scale]->tare();
+                    ctx.lcd.setCursor(2, 0);
+                    ctx.lcd.print("Zeroed!             ");
                     ctx.bz.playMarioCoin();  // Bling!
+                    sleep_ms(700);
                     state_ = DispenseState::Idle;
                     option_ = 1;
                     last_option_ = -1;
@@ -961,7 +1021,10 @@ public:
 // -------------------------------------------------------------- TestMenu ----
 
 class TestMenuScreen : public Screen {
-    int last_selected_ = -1;
+    int  selected_ = 0;
+    int  last_selected_ = -1;
+    int  last_encoder_pos_ = 0;
+    bool was_pressed_ = false;
 public:
     void enter(UiContext& ctx) override {
         ctx.lcd.clear();
@@ -974,25 +1037,39 @@ public:
         ctx.lcd.setCursor(3, 2);
         ctx.lcd.print("Back");
         indicatorArrow(ctx.lcd, 0, 0, 4);
+        selected_ = 0;
         last_selected_ = 0;
+        last_encoder_pos_ = ctx.enc.getPosition();
+        was_pressed_ = ctx.enc.isPressed();  // ignore carry-over press
     }
 
     ScreenId update(UiContext& ctx) override {
         int pos = ctx.enc.getPosition();
-        int selected = ((pos % 4) + 4) % 4;
-
-        if (selected != last_selected_) {
-            indicatorArrow(ctx.lcd, selected, 0, 4);
-            last_selected_ = selected;
+        int delta = pos - last_encoder_pos_;
+        if (delta != 0) {
+            selected_ += delta;
+            if (selected_ < 0) selected_ = 0;
+            if (selected_ > 3) selected_ = 3;
+            last_encoder_pos_ = pos;
         }
 
-        if (ctx.enc.isPressed()) {
-            if (selected == 0) return ScreenId::TestVibrator;
-            if (selected == 1) return ScreenId::TestServo;
-            if (selected == 2) return ScreenId::ServoCal;
-            return ScreenId::Menu;
+        if (selected_ != last_selected_) {
+            indicatorArrow(ctx.lcd, selected_, 0, 4);
+            last_selected_ = selected_;
         }
-        return ScreenId::TestMenu;
+
+        bool pressed = ctx.enc.isPressed();
+        ScreenId next = ScreenId::TestMenu;
+        if (pressed && !was_pressed_) {
+            if (selected_ == 0) next = ScreenId::TestVibrator;
+            else if (selected_ == 1) next = ScreenId::TestServo;
+            else if (selected_ == 2) next = ScreenId::ServoCal;
+            else next = ScreenId::Menu;
+        }
+        was_pressed_ = pressed;
+
+        sleep_ms(20);
+        return next;
     }
 };
 
