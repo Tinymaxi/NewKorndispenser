@@ -5,7 +5,7 @@
 // as "ui" in /api/status), the UI_V constant in the page script, and the
 // version tag in the masthead. The page compares UI_V against the status
 // field to detect a stale cached copy of itself.
-#define KD_UI_VERSION 8
+#define KD_UI_VERSION 9
 
 static const char WEB_PAGE[] = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
@@ -150,7 +150,7 @@ body.estop-on{padding-bottom:64px}
 OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the home-screen icon</div>
 
 <header class="masthead">
-<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v8</span></h1>
+<h1>KORN DISPENSER <span style="font-size:10px;font-weight:400;color:var(--ink2);letter-spacing:0">v9</span></h1>
 <div class="statusline num" id="statusText">CONNECTING&hellip;</div>
 </header>
 
@@ -286,7 +286,7 @@ OLD CACHED PAGE &middot; clear Safari website data, or remove &amp; re-add the h
 
 <script>
 const $=id=>document.getElementById(id);
-const UI_V=8; // must match KD_UI_VERSION + the masthead tag
+const UI_V=9; // must match KD_UI_VERSION + the masthead tag
 const LOW_BAG_G=500; // bag weight below this renders red on the scale cards
 const INK='#111',INK2='#666',HAIR='#ddd',RED='#E30613';
 // Series colors - validated categorical set (dispensed stays ink, setpoint red)
@@ -329,7 +329,7 @@ function toggleSec(id){
  applySec();
  if(id==='sec-chart'&&secOpen[id]){
   initGraph();
-  if(R&&!prevDisp)drawRun();else drawLive(lastTgt);
+  repaintChart();
  }
 }
 
@@ -490,7 +490,7 @@ function applyPID(){
 function tgl(k){
  show[k]=!show[k];
  $('tg'+k.toUpperCase()).classList.toggle('on',show[k]);
- if(R&&!prevDisp)drawRun();else drawLive(lastTgt);
+ repaintChart();
 }
 
 // --- Scale contents (grain names) ---
@@ -573,14 +573,24 @@ function buildDash(d){
 }
 
 // --- Canvas setup ---
+let lastCanvasW=0;
 function initGraph(){
  graphCanvas=$('graph');
  graphCtx=graphCanvas.getContext('2d');
  let dpr=window.devicePixelRatio||1;
  let rect=graphCanvas.getBoundingClientRect();
- graphCanvas.width=rect.width*dpr;
+ graphCanvas.width=rect.width*dpr;   // note: resets (wipes) the canvas
  graphCanvas.height=rect.height*dpr;
  graphCtx.scale(dpr,dpr);
+ lastCanvasW=rect.width;
+}
+// Redraw whichever chart is current. The old inline condition used prevDisp,
+// which stays true after a COMPLETED run - so a canvas wipe (resize/reopen)
+// was never repainted and the run chart "disappeared on touch" (iOS fires
+// resize when the toolbar slides during a micro-scroll).
+function repaintChart(){
+ if(!graphCtx)return;
+ if(R&&!lastDispensing)drawRun();else drawLive(lastTgt);
 }
 function cdims(){
  let r=graphCanvas.getBoundingClientRect();
@@ -984,8 +994,13 @@ mkWheel('twheel',100,v=>{
 mkWheel('cwheel',1000,null);
 initGraph();
 window.addEventListener('resize',()=>{
+ // iOS fires resize when the Safari toolbar slides in/out (height-only);
+ // wiping and repainting the canvas for that just risks losing the chart.
+ // Only re-init when the WIDTH actually changed (rotation, split view).
+ let w=graphCanvas?graphCanvas.getBoundingClientRect().width:0;
+ if(Math.abs(w-lastCanvasW)<1)return;
  initGraph();
- if(R&&!prevDisp)drawRun();
+ repaintChart();
 });
 renderHistory();
 function schedulePoll(){
