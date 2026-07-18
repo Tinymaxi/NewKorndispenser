@@ -34,6 +34,11 @@ public:
     // leftAlign=false -> right aligned (typical), true -> left aligned
     void printNumber(int value, uint8_t r, uint8_t g, uint8_t b, bool leftAlign=false);
 
+    // High-level: print with two decimal places, right-aligned ("IIII.DD").
+    // The decimal point lights on the third digit from the right. With 6
+    // digits the range is -999.99 .. 9999.99 (clipped).
+    void printFixed2(float value, uint8_t r, uint8_t g, uint8_t b);
+
 private:
     Ws2812& strip_;
     SevenSegLayout layout_;

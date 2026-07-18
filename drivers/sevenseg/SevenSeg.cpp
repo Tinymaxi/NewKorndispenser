@@ -66,6 +66,36 @@ void SevenSeg::setDigit(uint8_t digit, int value, uint8_t r, uint8_t g, uint8_t 
     setDigitMask(digit, mask, r, g, b);
 }
 
+void SevenSeg::printFixed2(float value, uint8_t r, uint8_t g, uint8_t b) {
+    bool neg = value < 0.0f;
+    if (neg) value = -value;
+    long cents = (long)(value * 100.0f + 0.5f);
+
+    // Clip to what the display can show (digits-2 integer places)
+    long maxIpart = 1;
+    for (uint8_t i = 0; i + 2 < layout_.digits; ++i) maxIpart *= 10;
+    if (cents >= maxIpart * 100) cents = maxIpart * 100 - 1;
+
+    // Blank all digits, then place hundredths, tenths, and the integer part
+    for (uint8_t d = 0; d < layout_.digits; ++d) setDigit(d, 99, 0, 0, 0);
+
+    uint8_t n = layout_.digits;
+    setDigit(n - 1, (int)(cents % 10), r, g, b);
+    setDigit(n - 2, (int)((cents / 10) % 10), r, g, b);
+    long ipart = cents / 100;
+    int pos = n - 3;
+    if (ipart == 0) {
+        setDigit(pos--, 0, r, g, b);
+    } else {
+        while (ipart > 0 && pos >= 0) {
+            setDigit(pos--, (int)(ipart % 10), r, g, b);
+            ipart /= 10;
+        }
+    }
+    if (neg && pos >= 0) setDigit(pos, -1, r, g, b);
+    setDot(n - 3, true, r, g, b);
+}
+
 void SevenSeg::printNumber(int value, uint8_t r, uint8_t g, uint8_t b, bool leftAlign) {
     // Convert to string with sign
     char buf[16];

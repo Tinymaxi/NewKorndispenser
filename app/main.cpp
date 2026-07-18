@@ -789,10 +789,9 @@ int main()
             lcd.setCursor(3, 0);
             lcd.print(wline);
 
-            // Update 7-segment with weight
-            int display_w = (int)(wg + 0.5f);
+            // Update 7-segment with weight (two decimals)
             sevenSeg->clear();
-            sevenSeg->printNumber(display_w < 0 ? 0 : display_w, 0, 128, 255);
+            sevenSeg->printFixed2(wg < 0 ? 0.0f : wg, 0, 128, 255);
             sevenSeg->show();
 
             sleep_ms(100);

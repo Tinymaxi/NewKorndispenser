@@ -473,14 +473,14 @@ public:
         float grams = ctx.scales[ctx.selected_scale]->read_weight();
         int display_grams = (int)(grams + 0.5f);  // round to nearest gram
 
-        // Display on 7-segment (color based on target)
+        // Display on 7-segment with two decimals (color based on target)
         ctx.sevenSeg->clear();
         if (display_grams < ctx.target_grams - 5) {
-            ctx.sevenSeg->printNumber(display_grams, 0, 0, 255);   // under: blue
+            ctx.sevenSeg->printFixed2(grams, 0, 0, 255);   // under: blue
         } else if (display_grams > ctx.target_grams + 5) {
-            ctx.sevenSeg->printNumber(display_grams, 255, 0, 0);   // over: red
+            ctx.sevenSeg->printFixed2(grams, 255, 0, 0);   // over: red
         } else {
-            ctx.sevenSeg->printNumber(display_grams, 0, 255, 0);   // at target: green
+            ctx.sevenSeg->printFixed2(grams, 0, 255, 0);   // at target: green
         }
         ctx.sevenSeg->show();
 
@@ -807,14 +807,15 @@ public:
                 lcd_value_ = display_dispensed;
             }
 
-            // 7-segment shows dispensed amount with color
+            // 7-segment shows dispensed amount with two decimals, colored
             ctx.sevenSeg->clear();
+            float seg_g = dispensed_grams < 0 ? 0.0f : dispensed_grams;
             if (dispensed_grams < ctx.target_grams - 5) {
-                ctx.sevenSeg->printNumber(display_dispensed, 0, 0, 255);  // blue - dispensing
+                ctx.sevenSeg->printFixed2(seg_g, 0, 0, 255);  // blue - dispensing
             } else if (dispensed_grams > ctx.target_grams + 5) {
-                ctx.sevenSeg->printNumber(display_dispensed, 255, 0, 0);  // red - overshoot!
+                ctx.sevenSeg->printFixed2(seg_g, 255, 0, 0);  // red - overshoot!
             } else {
-                ctx.sevenSeg->printNumber(display_dispensed, 0, 255, 0);  // green - on target
+                ctx.sevenSeg->printFixed2(seg_g, 0, 255, 0);  // green - on target
             }
             ctx.sevenSeg->show();
 
@@ -915,12 +916,13 @@ public:
                 lcd_value_ = display_live;
             }
 
-            // Color on 7-segment based on accuracy
+            // Color on 7-segment based on accuracy, two decimals
             ctx.sevenSeg->clear();
+            float seg_live = live_dispensed < 0 ? 0.0f : live_dispensed;
             if (live_dispensed > ctx.target_grams + 5) {
-                ctx.sevenSeg->printNumber(display_live, 255, 0, 0);  // red - overshoot
+                ctx.sevenSeg->printFixed2(seg_live, 255, 0, 0);  // red - overshoot
             } else {
-                ctx.sevenSeg->printNumber(display_live, 0, 255, 0);  // green - good
+                ctx.sevenSeg->printFixed2(seg_live, 0, 255, 0);  // green - good
             }
             ctx.sevenSeg->show();
 
